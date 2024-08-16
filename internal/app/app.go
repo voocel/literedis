@@ -8,12 +8,16 @@ import (
 	"literedis/pkg/network"
 	"literedis/pkg/network/tcp"
 	"literedis/pkg/protocol"
+	"strconv"
 	"strings"
 )
+
+type Storage map[string]string
 
 type App struct {
 	srv      network.Server
 	opts     *options
+	storage  Storage
 	protocol protocol.Protocol
 }
 
@@ -24,7 +28,8 @@ func NewApp(opts ...OptionFunc) *App {
 	}
 	return &App{
 		opts:     o,
-		protocol: protocol.NewRespProtocol(),
+		storage:  make(Storage),
+		protocol: protocol.NewRESPProtocol(),
 	}
 }
 
@@ -52,74 +57,89 @@ func (a *App) handleReceive(conn network.Conn, data []byte) {
 		log.Errorf("unpack data to struct failed: %v", err)
 		return
 	}
-	log.Debugf("[Gateway] receive message route: %v(%v), cid: %v, uid: %v,data: %v",
-		msg.GetCmd(), conn.Cid(), conn.Uid(), string(msg.GetData()))
+	log.Debugf("receive message type:%v, value: %v", msg.Type, msg.Content)
 	response, err := a.processCommand(msg)
 	if err != nil {
-		log.Println("Error processing command:", err)
+		log.Infof("Error processing command:%v", err)
 		return
 	}
+	fmt.Println(response)
 }
 
-func (a *App) processCommand(message *protocol.Message) (*protocol.Message, error) {
-	switch message.Type {
-	case "bulk":
-		command := string(message.Value.([]byte))
-		switch command {
-		case "PING":
-			return &protocol.Message{Type: "bulk", Value: []byte("PONG")}, nil
-		case "SET":
-			// SET 命令格式：SET <key> <value>
-			args, err := readBulkArgs(reader)
-			if err != nil || len(args) != 2 {
-				return &protocol.Message{Type: "error", Value: "Invalid number of arguments for SET"}, nil
+func (a *App) processCommand(msg *protocol.Message) (*protocol.Message, error) {
+	switch msg.Type {
+	case "SimpleString":
+		fmt.Println("SimpleString:", msg.Content)
+	case "Error":
+		fmt.Println("Error:", msg.Content)
+	case "Integer":
+		fmt.Println("Integer:", msg.Content)
+	case "BulkString":
+		fmt.Println("BulkString:", msg.Content)
+	case "Array":
+		fmt.Println("Array:", msg.Content)
+		//command := string(msg.Value.([]byte))
+		cmd := msg.Content.([]*protocol.Message)
+		switch cmd[0].Content.(string) {
+		case "set":
+			key, err := readBulkArgs(cmd[1].Content.(*bufio.Reader))
+			if err != nil {
+				return &protocol.Message{Type: "Error", Content: "Error reading key"}, err
 			}
-			key, value := args[0], args[1]
-			set(key, value)
-			return &protocol.Message{Type: "bulk", Value: []byte("OK")}, nil
-		case "GET":
-			// GET 命令格式：GET <key>
-			args, err := readBulkArgs(reader)
-			if err != nil || len(args) != 1 {
-				return &protocol.Message{Type: "error", Value: "Invalid number of arguments for GET"}, nil
+			value, err := readBulkArgs(cmd[2].Content.(*bufio.Reader))
+			if err != nil {
+				return &protocol.Message{Type: "Error", Content: "Error reading value"}, err
 			}
-			key := args[0]
-			value := get(key)
-			return &protocol.Message{Type: "bulk", Value: value}, nil
+			a.storage[key] = value
+			return &protocol.Message{Type: "SimpleString", Content: "OK"}, err
+		case "get":
+			key, err := readBulkArgs(cmd[1].Content.(*bufio.Reader))
+			if err != nil {
+				return &protocol.Message{Type: "Error", Content: "Error reading key"}, err
+			}
+			value, ok := a.storage[key]
+			if !ok {
+				return &protocol.Message{Type: "BulkString", Content: nil}, err
+			}
+			return &protocol.Message{Type: "BulkString", Content: []byte(value)}, err
+		case "del":
+			key, err := readBulkArgs(cmd[1].Content.(*bufio.Reader))
+			if err != nil {
+				return &protocol.Message{Type: "Error", Content: "Error reading key"}, err
+			}
+			if _, ok := a.storage[key]; ok {
+				delete(a.storage, key)
+				return &protocol.Message{Type: "Integer", Content: 1}, err
+			}
+			return &protocol.Message{Type: "Integer", Content: 0}, err
 		default:
-			return &protocol.Message{Type: "error", Value: "Unsupported command"}, nil
+			return &protocol.Message{Type: "Error", Content: "Unknown command"}, nil
 		}
 	default:
-		return &protocol.Message{Type: "error", Value: "Invalid message type"}, nil
+		return &protocol.Message{Type: "error", Content: "Invalid message type"}, nil
 	}
+	return &protocol.Message{Type: "error", Content: "Invalid message type"}, nil
 }
 
-func readBulkArgs(reader *bufio.Reader) ([][]byte, error) {
-	var args [][]byte
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return nil, err
-		}
-
-		line = strings.TrimRight(line, "\r\n")
-
-		message, err := Unpack(strings.NewReader(line))
-		if err != nil {
-			return nil, err
-		}
-
-		if message.Type != "bulk" {
-			return nil, fmt.Errorf("expected bulk data, got %s", message.Type)
-		}
-
-		args = append(args, message.Value.([]byte))
-
-		// 假设每个命令只有一个参数
-		break
+// readBulkArgs reads bulk string arguments from the reader.
+func readBulkArgs(reader *bufio.Reader) (string, error) {
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
 	}
-
-	return args, nil
+	length, err := strconv.Atoi(strings.TrimSuffix(line, protocol.CRLF))
+	if err != nil {
+		return "", err
+	}
+	if length == -1 {
+		return "", nil // Nil indicates a nil bulk string
+	}
+	data := make([]byte, length+2)
+	_, err = reader.Read(data)
+	if err != nil {
+		return "", err
+	}
+	return string(data[:length]), nil
 }
 
 func (a *App) Stop() {
