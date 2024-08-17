@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"literedis/internal/storage"
 	"literedis/pkg/log"
 	"literedis/pkg/network"
 	"literedis/pkg/network/tcp"
@@ -12,12 +13,10 @@ import (
 	"strings"
 )
 
-type Storage map[string]string
-
 type App struct {
 	srv      network.Server
 	opts     *options
-	storage  Storage
+	storage  storage.Storage
 	protocol protocol.Protocol
 }
 
@@ -28,7 +27,7 @@ func NewApp(opts ...OptionFunc) *App {
 	}
 	return &App{
 		opts:     o,
-		storage:  make(Storage),
+		storage:  storage.NewMapStorage(),
 		protocol: protocol.NewRESPProtocol(),
 	}
 }
@@ -90,27 +89,24 @@ func (a *App) processCommand(msg *protocol.Message) (*protocol.Message, error) {
 			if err != nil {
 				return &protocol.Message{Type: "Error", Content: "Error reading value"}, err
 			}
-			a.storage[key] = value
+			a.storage.Set(key, value)
 			return &protocol.Message{Type: "SimpleString", Content: "OK"}, err
 		case "get":
 			key, err := readBulkArgs(cmd[1].Content.(*bufio.Reader))
 			if err != nil {
 				return &protocol.Message{Type: "Error", Content: "Error reading key"}, err
 			}
-			value, ok := a.storage[key]
+			value, ok := a.storage.Get(key)
 			if !ok {
 				return &protocol.Message{Type: "BulkString", Content: nil}, err
 			}
-			return &protocol.Message{Type: "BulkString", Content: []byte(value)}, err
+			return &protocol.Message{Type: "BulkString", Content: value}, err
 		case "del":
 			key, err := readBulkArgs(cmd[1].Content.(*bufio.Reader))
 			if err != nil {
 				return &protocol.Message{Type: "Error", Content: "Error reading key"}, err
 			}
-			if _, ok := a.storage[key]; ok {
-				delete(a.storage, key)
-				return &protocol.Message{Type: "Integer", Content: 1}, err
-			}
+			a.storage.Del(key)
 			return &protocol.Message{Type: "Integer", Content: 0}, err
 		default:
 			return &protocol.Message{Type: "Error", Content: "Unknown command"}, nil
