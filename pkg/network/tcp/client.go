@@ -2,6 +2,7 @@ package tcp
 
 import (
 	"literedis/pkg/network"
+	"literedis/pkg/protocol"
 	"net"
 )
 
@@ -22,7 +23,7 @@ func NewClient(addr string, options ...ClientOptionFunc) network.Client {
 	}
 	return &client{
 		opts:     o,
-		protocol: protocol.NewDefaultProtocol(),
+		protocol: protocol.NewRESPProtocol(),
 	}
 }
 

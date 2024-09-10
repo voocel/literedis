@@ -1,5 +1,7 @@
 package network
 
+import "literedis/pkg/protocol"
+
 type Client interface {
 	Dial() (Conn, error)
 

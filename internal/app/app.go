@@ -3,7 +3,9 @@ package app
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
+	"literedis/internal/commands"
 	"literedis/internal/storage"
 	"literedis/pkg/log"
 	"literedis/pkg/network"
@@ -18,6 +20,7 @@ type App struct {
 	opts     *options
 	storage  storage.Storage
 	protocol protocol.Protocol
+	handlers map[string]commands.CommandHandler
 }
 
 func NewApp(opts ...OptionFunc) *App {
@@ -25,10 +28,19 @@ func NewApp(opts ...OptionFunc) *App {
 	for _, opt := range opts {
 		opt(o)
 	}
-	return &App{
+	app := &App{
 		opts:     o,
-		storage:  storage.NewMapStorage(),
+		storage:  storage.NewMemoryStorage(),
 		protocol: protocol.NewRESPProtocol(),
+		handlers: make(map[string]commands.CommandHandler),
+	}
+	app.registerHandlers()
+	return app
+}
+
+func (a *App) registerHandlers() {
+	for _, cmd := range commands.CommandList {
+		a.handlers[cmd.Name] = cmd.Handler
 	}
 }
 
@@ -60,9 +72,17 @@ func (a *App) handleReceive(conn network.Conn, data []byte) {
 	response, err := a.processCommand(msg)
 	if err != nil {
 		log.Infof("Error processing command:%v", err)
+		errResp := &protocol.Message{Type: "Error", Content: []byte(err.Error())}
+		respData, _ := a.protocol.Pack(errResp)
+		conn.Send(respData)
 		return
 	}
-	fmt.Println(response)
+	respData, err := a.protocol.Pack(response)
+	if err != nil {
+		log.Errorf("pack response failed: %v", err)
+		return
+	}
+	conn.Send(respData)
 }
 
 func (a *App) processCommand(msg *protocol.Message) (*protocol.Message, error) {
@@ -78,41 +98,20 @@ func (a *App) processCommand(msg *protocol.Message) (*protocol.Message, error) {
 	case "Array":
 		fmt.Println("Array:", msg.Content)
 		//command := string(msg.Value.([]byte))
-		cmd := msg.Content.([]*protocol.Message)
-		switch cmd[0].Content.(string) {
-		case "set":
-			key, err := readBulkArgs(cmd[1].Content.(*bufio.Reader))
-			if err != nil {
-				return &protocol.Message{Type: "Error", Content: "Error reading key"}, err
-			}
-			value, err := readBulkArgs(cmd[2].Content.(*bufio.Reader))
-			if err != nil {
-				return &protocol.Message{Type: "Error", Content: "Error reading value"}, err
-			}
-			a.storage.Set(key, value)
-			return &protocol.Message{Type: "SimpleString", Content: "OK"}, err
-		case "get":
-			key, err := readBulkArgs(cmd[1].Content.(*bufio.Reader))
-			if err != nil {
-				return &protocol.Message{Type: "Error", Content: "Error reading key"}, err
-			}
-			value, ok := a.storage.Get(key)
-			if !ok {
-				return &protocol.Message{Type: "BulkString", Content: nil}, err
-			}
-			return &protocol.Message{Type: "BulkString", Content: value}, err
-		case "del":
-			key, err := readBulkArgs(cmd[1].Content.(*bufio.Reader))
-			if err != nil {
-				return &protocol.Message{Type: "Error", Content: "Error reading key"}, err
-			}
-			a.storage.Del(key)
-			return &protocol.Message{Type: "Integer", Content: 0}, err
-		default:
-			return &protocol.Message{Type: "Error", Content: "Unknown command"}, nil
+		cmdArray, ok := msg.Content.([]*protocol.Message)
+		if !ok || len(cmdArray) == 0 {
+			return nil, errors.New("invalid command")
 		}
-	default:
-		return &protocol.Message{Type: "error", Content: "Invalid message type"}, nil
+		cmdName := strings.ToUpper(string(cmdArray[0].Content.([]byte)))
+		args := make([]string, len(cmdArray)-1)
+		for i, arg := range cmdArray[1:] {
+			args[i] = string(arg.Content.([]byte))
+		}
+		cmd, ok := a.handlers[cmdName]
+		if !ok {
+			return nil, fmt.Errorf("未知命令: %s", cmdName)
+		}
+		return cmd.Handler(a.storage, args)
 	}
 	return &protocol.Message{Type: "error", Content: "Invalid message type"}, nil
 }
