@@ -49,7 +49,7 @@ func NewServer(addr string, opts ...OptionFunc) network.Server {
 		sessions: &sync.Map{},
 		exitCh:   make(chan struct{}),
 		conns:    make(map[net.Conn]*Conn),
-		protocol: protocol.NewDefaultProtocol(),
+		protocol: protocol.NewRESPProtocol(),
 		pool: sync.Pool{
 			New: func() interface{} { return &Conn{} },
 		},
