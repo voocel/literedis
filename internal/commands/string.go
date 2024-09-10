@@ -18,9 +18,9 @@ func registerStringCommands() {
 	RegisterCommand("EXPIRE", handleExpire)
 }
 
-func handleSet(storage storage.Storage, args []string) (*protocol.Message, error) {
+func handleSet(s storage.Storage, args []string) (*protocol.Message, error) {
 	if len(args) < 2 {
-		return nil, errors.New("SET 命令需要至少两个参数")
+		return nil, errors.New("SET command requires at least two arguments")
 	}
 
 	key, value := args[0], args[1]
@@ -30,19 +30,19 @@ func handleSet(storage storage.Storage, args []string) (*protocol.Message, error
 		if strings.ToUpper(args[2]) == "EX" && len(args) > 3 {
 			seconds, err := strconv.Atoi(args[3])
 			if err != nil {
-				return nil, fmt.Errorf("无效的过期时间: %v", err)
+				return nil, fmt.Errorf("Invalid expiration time: %v", err)
 			}
 			expiration = time.Duration(seconds) * time.Second
 		} else if strings.ToUpper(args[2]) == "PX" && len(args) > 3 {
 			milliseconds, err := strconv.Atoi(args[3])
 			if err != nil {
-				return nil, fmt.Errorf("无效的过期时间: %v", err)
+				return nil, fmt.Errorf("Invalid expiration time: %v", err)
 			}
 			expiration = time.Duration(milliseconds) * time.Millisecond
 		}
 	}
 
-	err := storage.Set(key, []byte(value), expiration)
+	err := s.Set(key, []byte(value), expiration)
 	if err != nil {
 		return nil, err
 	}
@@ -50,14 +50,14 @@ func handleSet(storage storage.Storage, args []string) (*protocol.Message, error
 	return &protocol.Message{Type: "SimpleString", Content: "OK"}, nil
 }
 
-func handleGet(storage storage.Storage, args []string) (*protocol.Message, error) {
+func handleGet(s storage.Storage, args []string) (*protocol.Message, error) {
 	if len(args) != 1 {
-		return nil, errors.New("GET 命令需要一个参数")
+		return nil, errors.New("GET command requires one argument")
 	}
 
-	value, err := storage.Get(args[0])
+	value, err := s.Get(args[0])
 	if err != nil {
-		if err == storage.ErrKeyNotFound {
+		if errors.Is(err, storage.ErrKeyNotFound) {
 			return &protocol.Message{Type: "BulkString", Content: nil}, nil
 		}
 		return nil, err
@@ -66,14 +66,14 @@ func handleGet(storage storage.Storage, args []string) (*protocol.Message, error
 	return &protocol.Message{Type: "BulkString", Content: value}, nil
 }
 
-func handleDel(storage storage.Storage, args []string) (*protocol.Message, error) {
+func handleDel(s storage.Storage, args []string) (*protocol.Message, error) {
 	if len(args) < 1 {
-		return nil, errors.New("DEL 命令需要至少一个参数")
+		return nil, errors.New("DEL command requires at least one argument")
 	}
 
 	count := 0
 	for _, key := range args {
-		deleted, err := storage.Del(key)
+		deleted, err := s.Del(key)
 		if err != nil {
 			return nil, err
 		}
@@ -85,18 +85,14 @@ func handleDel(storage storage.Storage, args []string) (*protocol.Message, error
 	return &protocol.Message{Type: "Integer", Content: count}, nil
 }
 
-func handleExists(storage storage.Storage, args []string) (*protocol.Message, error) {
+func handleExists(s storage.Storage, args []string) (*protocol.Message, error) {
 	if len(args) < 1 {
-		return nil, errors.New("EXISTS 命令需要至少一个参数")
+		return nil, errors.New("EXISTS command requires at least one argument")
 	}
 
 	count := 0
 	for _, key := range args {
-		exists, err := storage.Exists(key)
-		if err != nil {
-			return nil, err
-		}
-		if exists {
+		if s.Exists(key) {
 			count++
 		}
 	}
@@ -106,13 +102,13 @@ func handleExists(storage storage.Storage, args []string) (*protocol.Message, er
 
 func handleExpire(storage storage.Storage, args []string) (*protocol.Message, error) {
 	if len(args) != 2 {
-		return nil, errors.New("EXPIRE 命令需要两个参数")
+		return nil, errors.New("EXPIRE command requires two arguments")
 	}
 
 	key := args[0]
 	seconds, err := strconv.Atoi(args[1])
 	if err != nil {
-		return nil, fmt.Errorf("无效的过期时间: %v", err)
+		return nil, fmt.Errorf("Invalid expiration time: %v", err)
 	}
 
 	ok, err := storage.Expire(key, time.Duration(seconds)*time.Second)

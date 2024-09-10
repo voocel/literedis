@@ -5,7 +5,8 @@ import (
 	"time"
 )
 
-var ErrKeyNotFound = errors.New("key does not exist")
+var ErrKeyNotFound = errors.New("key not found")
+var ErrInvalidDBIndex = errors.New("invalid database index")
 
 type Storage interface {
 	StringStorage
@@ -13,11 +14,13 @@ type Storage interface {
 	ListStorage
 
 	Del(key string) (bool, error)
-	Exists(key string) (bool, error)
+	Exists(key string) bool
 	Expire(key string, expiration time.Duration) (bool, error)
 	TTL(key string) (time.Duration, error)
 	Type(key string) (string, error)
 	Flush() error
+	FlushDB() error
+	Select(index int) error
 }
 
 type StringStorage interface {

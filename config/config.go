@@ -36,6 +36,7 @@ func LoadConfig(paths ...string) {
 		viper.AddConfigPath(".")
 		viper.AddConfigPath("config")
 		viper.AddConfigPath("../config")
+		viper.AddConfigPath("../../config")
 	} else {
 		for _, path := range paths {
 			viper.AddConfigPath(path)

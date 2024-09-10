@@ -13,9 +13,9 @@ func registerHashCommands() {
 	RegisterCommand("HLEN", handleHLen)
 }
 
-func handleHSet(storage storage.Storage, args []string) (*protocol.Message, error) {
+func handleHSet(s storage.Storage, args []string) (*protocol.Message, error) {
 	if len(args) < 3 || len(args)%2 == 0 {
-		return nil, errors.New("HSET 命令需要至少三个参数，且参数数量必须为奇数")
+		return nil, errors.New("HSET command requires at least three arguments and an odd number of arguments")
 	}
 
 	key := args[0]
@@ -28,7 +28,7 @@ func handleHSet(storage storage.Storage, args []string) (*protocol.Message, erro
 		fields[fieldName] = []byte(fieldValue)
 	}
 
-	count, err := storage.HSet(key, fields)
+	count, err := s.HSet(key, fields)
 	if err != nil {
 		return nil, err
 	}
@@ -36,13 +36,13 @@ func handleHSet(storage storage.Storage, args []string) (*protocol.Message, erro
 	return &protocol.Message{Type: "Integer", Content: count}, nil
 }
 
-func handleHGet(storage storage.Storage, args []string) (*protocol.Message, error) {
+func handleHGet(s storage.Storage, args []string) (*protocol.Message, error) {
 	if len(args) != 2 {
-		return nil, errors.New("HGET 命令需要两个参数")
+		return nil, errors.New("HGET command requires two parameters")
 	}
 
 	key, field := args[0], args[1]
-	value, err := storage.HGet(key, field)
+	value, err := s.HGet(key, field)
 	if err != nil {
 		if err == storage.ErrKeyNotFound {
 			return &protocol.Message{Type: "BulkString", Content: nil}, nil
@@ -53,15 +53,15 @@ func handleHGet(storage storage.Storage, args []string) (*protocol.Message, erro
 	return &protocol.Message{Type: "BulkString", Content: value}, nil
 }
 
-func handleHDel(storage storage.Storage, args []string) (*protocol.Message, error) {
+func handleHDel(s storage.Storage, args []string) (*protocol.Message, error) {
 	if len(args) < 2 {
-		return nil, errors.New("HDEL 命令需要至少两个参数")
+		return nil, errors.New("HDEL command requires at least two parameters")
 	}
 
 	key := args[0]
 	fields := args[1:]
 
-	count, err := storage.HDel(key, fields...)
+	count, err := s.HDel(key, fields...)
 	if err != nil {
 		return nil, err
 	}
@@ -69,13 +69,13 @@ func handleHDel(storage storage.Storage, args []string) (*protocol.Message, erro
 	return &protocol.Message{Type: "Integer", Content: count}, nil
 }
 
-func handleHLen(storage storage.Storage, args []string) (*protocol.Message, error) {
+func handleHLen(s storage.Storage, args []string) (*protocol.Message, error) {
 	if len(args) != 1 {
-		return nil, errors.New("HLEN 命令需要一个参数")
+		return nil, errors.New("HLEN command requires a parameter")
 	}
 
 	key := args[0]
-	length, err := storage.HLen(key)
+	length, err := s.HLen(key)
 	if err != nil {
 		return nil, err
 	}
