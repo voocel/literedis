@@ -26,12 +26,6 @@ const (
 	CRLF               = "\r\n"
 )
 
-// Message represents a generic message structure
-type Message struct {
-	Type    string
-	Content interface{}
-}
-
 // Pack packs a Message into a RESP packet
 func (p *RESPProtocol) Pack(msg *Message) ([]byte, error) {
 	var buf bytes.Buffer
