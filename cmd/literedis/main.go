@@ -25,7 +25,18 @@ func main() {
 
 	log.Init("redis", currentFlags.LogLevel)
 
-	a := app.NewApp()
+	nodeID := currentFlags.Node
+	clusterNodes := currentFlags.Cluster
+
+	opts := []app.OptionFunc{
+		app.WithNodeID(nodeID),
+	}
+
+	if clusterNodes != "" {
+		opts = append(opts, app.WithClusterNodes(clusterNodes))
+	}
+
+	a := app.NewApp(opts...)
 	a.Start()
 
 	ch := make(chan os.Signal, 1)
@@ -48,6 +59,8 @@ func main() {
 type Flags struct {
 	Host     string `short:"h" long:"host" description:"Specific server host" default:""`
 	Port     string `short:"p" long:"port" description:"Specific server port" default:""`
+	Node     string `short:"n" long:"node" description:"Node ID" default:""`
+	Cluster  string `short:"c" long:"cluster" description:""Comma-separated list of cluster nodes" default:""`
 	Setup    bool   `short:"S" long:"setup" description:"Run setup"`
 	Stream   bool   `short:"s" long:"stream" description:"Stream"`
 	Model    string `short:"m" long:"model" description:"Choose model"`
