@@ -3,6 +3,7 @@ package commands
 import (
 	"errors"
 	"fmt"
+	"literedis/internal/consts"
 	"literedis/internal/storage"
 	"literedis/pkg/protocol"
 	"strconv"
@@ -14,6 +15,9 @@ func registerStringCommands() {
 	RegisterCommand("SET", handleSet)
 	RegisterCommand("GET", handleGet)
 	RegisterCommand("DEL", handleDel)
+	RegisterCommand("APPEND", handleAppend)
+	RegisterCommand("GETRANGE", handleGetRange)
+	RegisterCommand("SETRANGE", handleSetRange)
 	RegisterCommand("EXISTS", handleExists)
 	RegisterCommand("EXPIRE", handleExpire)
 }
@@ -122,4 +126,53 @@ func handleExpire(storage storage.Storage, args []string) (*protocol.Message, er
 	}
 
 	return &protocol.Message{Type: "Integer", Content: result}, nil
+}
+
+func handleAppend(s storage.Storage, args []string) (*protocol.Message, error) {
+	if len(args) != 2 {
+		return nil, consts.ErrInvalidArgument
+	}
+	key, value := args[0], []byte(args[1])
+	newLength, err := s.Append(key, value)
+	if err != nil {
+		return nil, err
+	}
+	return &protocol.Message{Type: "Integer", Content: int64(newLength)}, nil
+}
+
+func handleGetRange(s storage.Storage, args []string) (*protocol.Message, error) {
+	if len(args) != 3 {
+		return nil, consts.ErrInvalidArgument
+	}
+	key := args[0]
+	start, err := strconv.Atoi(args[1])
+	if err != nil {
+		return nil, consts.ErrInvalidArgument
+	}
+	end, err := strconv.Atoi(args[2])
+	if err != nil {
+		return nil, consts.ErrInvalidArgument
+	}
+	value, err := s.GetRange(key, start, end)
+	if err != nil {
+		return nil, err
+	}
+	return &protocol.Message{Type: "BulkString", Content: value}, nil
+}
+
+func handleSetRange(s storage.Storage, args []string) (*protocol.Message, error) {
+	if len(args) != 3 {
+		return nil, consts.ErrInvalidArgument
+	}
+	key := args[0]
+	offset, err := strconv.Atoi(args[1])
+	if err != nil {
+		return nil, consts.ErrInvalidArgument
+	}
+	value := []byte(args[2])
+	newLength, err := s.SetRange(key, offset, value)
+	if err != nil {
+		return nil, err
+	}
+	return &protocol.Message{Type: "Integer", Content: int64(newLength)}, nil
 }

@@ -1,12 +1,14 @@
 package storage
 
 import (
+	"literedis/internal/consts"
+	"literedis/internal/datastruct/dsstring"
 	"sync"
 	"time"
 )
 
 type StringData struct {
-	Value  []byte
+	Value  *dsstring.SDS
 	Expiry time.Time
 }
 
@@ -31,7 +33,7 @@ func (m *MemoryStringStorage) Set(key string, value []byte, expiration time.Dura
 	}
 
 	m.data[key] = &StringData{
-		Value:  value,
+		Value:  dsstring.NewSDS(string(value)),
 		Expiry: expiry,
 	}
 
@@ -44,15 +46,15 @@ func (m *MemoryStringStorage) Get(key string) ([]byte, error) {
 
 	data, ok := m.data[key]
 	if !ok {
-		return nil, ErrKeyNotFound
+		return nil, consts.ErrKeyNotFound
 	}
 
 	if !data.Expiry.IsZero() && time.Now().After(data.Expiry) {
 		delete(m.data, key)
-		return nil, ErrKeyNotFound
+		return nil, consts.ErrKeyNotFound
 	}
 
-	return data.Value, nil
+	return data.Value.Get(), nil
 }
 
 func (m *MemoryStringStorage) Del(key string) (bool, error) {
@@ -91,11 +93,11 @@ func (m *MemoryStringStorage) TTL(key string) (time.Duration, error) {
 
 	data, exists := m.data[key]
 	if !exists {
-		return -2, nil // -2 that the key does not exist
+		return -2, nil // -2 indicates that the key does not exist
 	}
 
 	if data.Expiry.IsZero() {
-		return -1, nil // -1 that the key has no expiration time
+		return -1, nil // -1 indicates that the key has no expiration time
 	}
 
 	ttl := time.Until(data.Expiry)
@@ -105,4 +107,68 @@ func (m *MemoryStringStorage) TTL(key string) (time.Duration, error) {
 	}
 
 	return ttl, nil
+}
+
+func (m *MemoryStringStorage) Append(key string, value []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	data, exists := m.data[key]
+	if !exists {
+		m.data[key] = &StringData{
+			Value: dsstring.NewSDS(""),
+		}
+		data = m.data[key]
+	}
+
+	return data.Value.Append(value), nil
+}
+
+func (m *MemoryStringStorage) GetRange(key string, start, end int) ([]byte, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	data, exists := m.data[key]
+	if !exists {
+		return nil, consts.ErrKeyNotFound
+	}
+
+	if !data.Expiry.IsZero() && time.Now().After(data.Expiry) {
+		delete(m.data, key)
+		return nil, consts.ErrKeyNotFound
+	}
+
+	return data.Value.GetRange(start, end), nil
+}
+
+func (m *MemoryStringStorage) SetRange(key string, offset int, value []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	data, exists := m.data[key]
+	if !exists {
+		m.data[key] = &StringData{
+			Value: dsstring.NewSDS(""),
+		}
+		data = m.data[key]
+	}
+
+	return data.Value.SetRange(offset, value), nil
+}
+
+func (m *MemoryStringStorage) StrLen(key string) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	data, exists := m.data[key]
+	if !exists {
+		return 0, consts.ErrKeyNotFound
+	}
+
+	if !data.Expiry.IsZero() && time.Now().After(data.Expiry) {
+		delete(m.data, key)
+		return 0, consts.ErrKeyNotFound
+	}
+
+	return int(data.Value.Len()), nil
 }
