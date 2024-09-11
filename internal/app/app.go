@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"literedis/internal/cluster"
 	"literedis/internal/commands"
+	"literedis/internal/consts"
 	"literedis/internal/storage"
 	"literedis/pkg/log"
 	"literedis/pkg/network"
@@ -20,6 +22,7 @@ type App struct {
 	opts     *options
 	storage  storage.Storage
 	protocol protocol.Protocol
+	cluster  *cluster.Cluster
 	handlers map[string]commands.CommandHandler
 }
 
@@ -35,7 +38,85 @@ func NewApp(opts ...OptionFunc) *App {
 		handlers: make(map[string]commands.CommandHandler),
 	}
 	app.registerHandlers()
+	if o.clusterMode {
+		app.cluster = cluster.NewCluster(o.nodeID)
+		// Add the local node to the cluster
+		app.cluster.AddNode(&cluster.Node{ID: o.nodeID, Address: ":8080"})
+
+		// Add other nodes from the clusterNodes list
+		for _, nodeAddr := range o.clusterNodes {
+			parts := strings.Split(nodeAddr, "@")
+			if len(parts) != 2 {
+				log.Errorf("Invalid cluster node address: %s", nodeAddr)
+				continue
+			}
+			nodeID, addr := parts[0], parts[1]
+			if nodeID != o.nodeID {
+				err := app.cluster.AddNode(&cluster.Node{ID: nodeID, Address: addr})
+				if err != nil {
+					log.Errorf("Failed to add node %s: %v", nodeID, err)
+				}
+			}
+		}
+
+		// Set the cluster instance in the storage
+		if ms, ok := app.storage.(*storage.MemoryStorage); ok {
+			ms.SetCluster(app.cluster)
+		} else {
+			log.Errorf("Unable to set cluster in storage: unexpected storage type")
+		}
+	}
 	return app
+}
+
+// Implement handleClusterOps method
+func (a *App) handleClusterOps(conn network.Conn, msg *protocol.Message) {
+	cmdArray, ok := msg.Content.([]*protocol.Message)
+	if !ok || len(cmdArray) < 2 {
+		a.sendError(conn, errors.New("invalid cluster command"))
+		return
+	}
+
+	args := make([]string, len(cmdArray)-1)
+	for i, arg := range cmdArray[1:] {
+		args[i] = string(arg.Content.([]byte))
+	}
+
+	response, err := commands.ClusterCommand(a.storage, args)
+	if err != nil {
+		a.sendError(conn, err)
+		return
+	}
+
+	respData, err := a.protocol.Pack(response)
+	if err != nil {
+		a.sendError(conn, err)
+		return
+	}
+
+	conn.Send(respData)
+}
+
+// Helper method to send errors
+func (a *App) sendError(conn network.Conn, err error) {
+	errResp := &protocol.Message{Type: "Error", Content: []byte(err.Error())}
+	respData, _ := a.protocol.Pack(errResp)
+	conn.Send(respData)
+}
+
+func (a *App) forwardRequest(msg *protocol.Message) (*protocol.Message, error) {
+	cmdArray, ok := msg.Content.([]*protocol.Message)
+	if !ok || len(cmdArray) < 2 {
+		return nil, errors.New("invalid command")
+	}
+
+	key := string(cmdArray[1].Content.([]byte))
+	node := a.cluster.GetNodeForKey(key)
+	if node == nil {
+		return nil, errors.New("no node found for key")
+	}
+
+	return a.cluster.ForwardRequest(node.ID, msg)
 }
 
 func (a *App) registerHandlers() {
@@ -107,11 +188,20 @@ func (a *App) processCommand(msg *protocol.Message) (*protocol.Message, error) {
 		for i, arg := range cmdArray[1:] {
 			args[i] = string(arg.Content.([]byte))
 		}
+
+		// Check if the command should be executed on this node
+		if len(args) > 0 {
+			node := a.cluster.GetNodeForKey(args[0])
+			if !a.cluster.IsLocalNode(node.ID) {
+				return nil, consts.ErrWrongNode
+			}
+		}
+
 		cmd, ok := a.handlers[cmdName]
 		if !ok {
-			return nil, fmt.Errorf("未知命令: %s", cmdName)
+			return nil, fmt.Errorf("unknown command: %s", cmdName)
 		}
-		return cmd.Handler(a.storage, args)
+		return cmd(a.storage, args)
 	}
 	return &protocol.Message{Type: "error", Content: "Invalid message type"}, nil
 }

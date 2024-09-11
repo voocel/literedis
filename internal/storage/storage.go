@@ -12,6 +12,7 @@ type Storage interface {
 	StringStorage
 	HashStorage
 	ListStorage
+	SetStorage
 
 	Del(key string) (bool, error)
 	Exists(key string) bool
@@ -42,4 +43,11 @@ type ListStorage interface {
 	RPop(key string) ([]byte, error)
 	LLen(key string) (int, error)
 	LRange(key string, start, stop int) ([][]byte, error)
+}
+
+type SetStorage interface {
+	SAdd(key string, members ...string) (int, error)
+	SMembers(key string) ([]string, error)
+	SRem(key string, members ...string) (int, error)
+	SCard(key string) (int, error)
 }
