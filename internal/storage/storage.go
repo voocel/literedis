@@ -27,6 +27,10 @@ type Storage interface {
 type StringStorage interface {
 	Set(key string, value []byte, expiration time.Duration) error
 	Get(key string) ([]byte, error)
+	Append(key string, value []byte) (int, error)
+	GetRange(key string, start, end int) ([]byte, error)
+	SetRange(key string, offset int, value []byte) (int, error)
+	StrLen(key string) (int, error)
 }
 
 type HashStorage interface {

@@ -2,6 +2,8 @@ package storage
 
 import (
 	"literedis/internal/cluster"
+	"literedis/internal/consts"
+	"literedis/internal/datastruct/dslist"
 	"sync"
 	"time"
 )
@@ -11,7 +13,7 @@ const DefaultDBCount = 16
 type Database struct {
 	stringStorage *MemoryStringStorage
 	hashStorage   *MemoryHashStorage
-	listStorage   *MemoryListStorage
+	listStorage   map[string]*dslist.QuickList
 	setStorage    *MemorySetStorage
 	expiry        map[string]time.Time
 }
@@ -32,7 +34,7 @@ func NewMemoryStorage() *MemoryStorage {
 		ms.databases[i] = &Database{
 			stringStorage: NewMemoryStringStorage(),
 			hashStorage:   NewMemoryHashStorage(),
-			listStorage:   NewMemoryListStorage(),
+			listStorage:   make(map[string]*dslist.QuickList),
 			setStorage:    NewMemorySetStorage(),
 			expiry:        make(map[string]time.Time),
 		}
@@ -82,6 +84,32 @@ func (m *MemoryStorage) Get(key string) ([]byte, error) {
 		return nil, ErrKeyNotFound
 	}
 	return db.stringStorage.Get(key)
+}
+
+func (m *MemoryStorage) Append(key string, value []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	db := m.getCurrentDB()
+	return db.stringStorage.Append(key, value)
+}
+
+func (m *MemoryStorage) GetRange(key string, start, end int) ([]byte, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	db := m.getCurrentDB()
+	return db.stringStorage.GetRange(key, start, end)
+}
+
+func (m *MemoryStorage) SetRange(key string, offset int, value []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	db := m.getCurrentDB()
+	return db.stringStorage.SetRange(key, offset, value)
+}
+
+func (m *MemoryStorage) StrLen(key string) (int, error) {
+	//TODO implement me
+	panic("implement me")
 }
 
 // ########################## Hash operations ##########################
@@ -135,64 +163,148 @@ func (m *MemoryStorage) LPush(key string, values ...[]byte) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	db := m.getCurrentDB()
-	if m.isExpired(db, key) {
-		m.deleteKey(db, key)
+	list, ok := db.listStorage[key]
+	if !ok {
+		list = dslist.New()
+		db.listStorage[key] = list
+	} else if list.IsExpired() {
+		list = dslist.New()
+		db.listStorage[key] = list
+		delete(db.expiry, key)
 	}
-	return db.listStorage.LPush(key, values...)
+	length := list.LPush(values...)
+	return int(length), nil
 }
 
 func (m *MemoryStorage) RPush(key string, values ...[]byte) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	db := m.getCurrentDB()
-	if m.isExpired(db, key) {
-		m.deleteKey(db, key)
+	list, ok := db.listStorage[key]
+	if !ok {
+		list = dslist.New()
+		db.listStorage[key] = list
+	} else if list.IsExpired() {
+		list = dslist.New()
+		db.listStorage[key] = list
 	}
-	return db.listStorage.RPush(key, values...)
+	length := list.RPush(values...)
+	return int(length), nil
 }
 
 func (m *MemoryStorage) LPop(key string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	db := m.getCurrentDB()
-	if m.isExpired(db, key) {
-		m.deleteKey(db, key)
-		return nil, ErrKeyNotFound
+	list, ok := db.listStorage[key]
+	if !ok {
+		return nil, consts.ErrKeyNotFound
 	}
-	return db.listStorage.LPop(key)
+	if list.IsExpired() {
+		delete(db.listStorage, key)
+		return nil, consts.ErrKeyNotFound
+	}
+	value, ok := list.LPop()
+	if !ok {
+		delete(db.listStorage, key)
+		return nil, consts.ErrKeyNotFound
+	}
+	if list.Len() == 0 {
+		delete(db.listStorage, key)
+	}
+	return value, nil
 }
 
 func (m *MemoryStorage) RPop(key string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	db := m.getCurrentDB()
-	if m.isExpired(db, key) {
-		m.deleteKey(db, key)
-		return nil, ErrKeyNotFound
+	list, ok := db.listStorage[key]
+	if !ok {
+		return nil, consts.ErrKeyNotFound
 	}
-	return db.listStorage.RPop(key)
-}
-
-func (m *MemoryStorage) LLen(key string) (int, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	db := m.getCurrentDB()
-	if m.isExpired(db, key) {
-		m.deleteKey(db, key)
-		return 0, nil
+	if list.IsExpired() {
+		delete(db.listStorage, key)
+		return nil, consts.ErrKeyNotFound
 	}
-	return db.listStorage.LLen(key)
+	value, ok := list.RPop()
+	if !ok {
+		delete(db.listStorage, key)
+		return nil, consts.ErrKeyNotFound
+	}
+	if list.Len() == 0 {
+		delete(db.listStorage, key)
+	}
+	return value, nil
 }
 
 func (m *MemoryStorage) LRange(key string, start, stop int) ([][]byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	db := m.getCurrentDB()
-	if m.isExpired(db, key) {
-		m.deleteKey(db, key)
-		return [][]byte{}, nil
+	list, ok := db.listStorage[key]
+	if !ok {
+		return nil, consts.ErrKeyNotFound
 	}
-	return db.listStorage.LRange(key, start, stop)
+	if list.IsExpired() {
+		delete(db.listStorage, key)
+		return nil, consts.ErrKeyNotFound
+	}
+	return list.LRange(int64(start), int64(stop)), nil
+}
+
+// LLen returns the length of the list stored at key
+func (m *MemoryStorage) LLen(key string) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	db := m.getCurrentDB()
+	list, ok := db.listStorage[key]
+	if !ok {
+		return 0, nil
+	}
+	if m.isExpired(db, key) {
+		delete(db.listStorage, key)
+		delete(db.expiry, key)
+		return 0, nil
+	}
+	return int(list.Len()), nil
+}
+
+func (m *MemoryStorage) LIndex(key string, index int64) ([]byte, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	db := m.getCurrentDB()
+	list, ok := db.listStorage[key]
+	if !ok {
+		return nil, consts.ErrKeyNotFound
+	}
+	if list.IsExpired() {
+		delete(db.listStorage, key)
+		return nil, consts.ErrKeyNotFound
+	}
+	value, ok := list.LIndex(index)
+	if !ok {
+		return nil, consts.ErrKeyNotFound
+	}
+	return value, nil
+}
+
+func (m *MemoryStorage) LSet(key string, index int64, value []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	db := m.getCurrentDB()
+	list, ok := db.listStorage[key]
+	if !ok {
+		return consts.ErrKeyNotFound
+	}
+	if list.IsExpired() {
+		delete(db.listStorage, key)
+		return consts.ErrKeyNotFound
+	}
+	if !list.LSet(index, value) {
+		return consts.ErrIndexOutOfRange
+	}
+	return nil
 }
 
 // ########################## Set operations ##########################
@@ -255,8 +367,8 @@ func (m *MemoryStorage) Del(key string) (bool, error) {
 		delete(db.hashStorage.data, key)
 		deleted = true
 	}
-	if _, ok := db.listStorage.data[key]; ok {
-		delete(db.listStorage.data, key)
+	if _, ok := db.listStorage[key]; ok {
+		delete(db.listStorage, key)
 		deleted = true
 	}
 	delete(db.expiry, key)
@@ -273,7 +385,7 @@ func (m *MemoryStorage) Exists(key string) bool {
 	}
 	_, existsString := db.stringStorage.data[key]
 	_, existsHash := db.hashStorage.data[key]
-	_, existsList := db.listStorage.data[key]
+	_, existsList := db.listStorage[key]
 	return existsString || existsHash || existsList
 }
 
@@ -289,7 +401,7 @@ func (m *MemoryStorage) Expire(key string, expiration time.Duration) (bool, erro
 		db.expiry[key] = time.Now().Add(expiration)
 		return true, nil
 	}
-	if _, ok := db.listStorage.data[key]; ok {
+	if _, ok := db.listStorage[key]; ok {
 		db.expiry[key] = time.Now().Add(expiration)
 		return true, nil
 	}
@@ -328,7 +440,7 @@ func (m *MemoryStorage) Type(key string) (string, error) {
 	if _, ok := db.hashStorage.data[key]; ok {
 		return "hash", nil
 	}
-	if _, ok := db.listStorage.data[key]; ok {
+	if _, ok := db.listStorage[key]; ok {
 		return "list", nil
 	}
 	return "", ErrKeyNotFound
@@ -341,7 +453,8 @@ func (m *MemoryStorage) Flush() error {
 		m.databases[i] = &Database{
 			stringStorage: NewMemoryStringStorage(),
 			hashStorage:   NewMemoryHashStorage(),
-			listStorage:   NewMemoryListStorage(),
+			listStorage:   make(map[string]*dslist.QuickList),
+			setStorage:    NewMemorySetStorage(),
 			expiry:        make(map[string]time.Time),
 		}
 	}
@@ -354,7 +467,8 @@ func (m *MemoryStorage) FlushDB() error {
 	m.databases[m.currentDBIndex] = &Database{
 		stringStorage: NewMemoryStringStorage(),
 		hashStorage:   NewMemoryHashStorage(),
-		listStorage:   NewMemoryListStorage(),
+		listStorage:   make(map[string]*dslist.QuickList),
+		setStorage:    NewMemorySetStorage(),
 		expiry:        make(map[string]time.Time),
 	}
 	return nil
@@ -372,7 +486,7 @@ func (m *MemoryStorage) isExpired(db *Database, key string) bool {
 func (m *MemoryStorage) deleteKey(db *Database, key string) {
 	delete(db.stringStorage.data, key)
 	delete(db.hashStorage.data, key)
-	delete(db.listStorage.data, key)
+	delete(db.listStorage, key)
 	delete(db.setStorage.data, key)
 	delete(db.expiry, key)
 }
