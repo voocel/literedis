@@ -1,132 +1,191 @@
 package storage
 
 import (
+	"literedis/internal/consts"
+	"literedis/internal/datastruct/dslist"
 	"sync"
 	"time"
 )
 
-type ListData struct {
-	Values [][]byte
-	Expiry time.Time
-}
-
+// MemoryListStorage implements ListStorage interface using in-memory storage
 type MemoryListStorage struct {
-	data map[string]*ListData
+	data map[string]*dslist.QuickList
 	mu   sync.RWMutex
 }
 
+// NewMemoryListStorage creates a new MemoryListStorage
 func NewMemoryListStorage() *MemoryListStorage {
 	return &MemoryListStorage{
-		data: make(map[string]*ListData),
+		data: make(map[string]*dslist.QuickList),
 	}
 }
 
-func (m *MemoryListStorage) LPush(key string, values ...[]byte) (int, error) {
+// LPush inserts all the specified values at the head of the list stored at key
+func (m *MemoryListStorage) LPush(key string, values ...[]byte) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	list, ok := m.data[key]
 	if !ok {
-		list = &ListData{Values: make([][]byte, 0)}
+		list = dslist.New()
 		m.data[key] = list
 	}
 
-	list.Values = append(append(make([][]byte, 0, len(values)+len(list.Values)), values...), list.Values...)
-	return len(list.Values), nil
+	return list.LPush(values...), nil
 }
 
-func (m *MemoryListStorage) RPush(key string, values ...[]byte) (int, error) {
+// RPush inserts all the specified values at the tail of the list stored at key
+func (m *MemoryListStorage) RPush(key string, values ...[]byte) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	list, ok := m.data[key]
 	if !ok {
-		list = &ListData{Values: make([][]byte, 0)}
+		list = dslist.New()
 		m.data[key] = list
 	}
 
-	list.Values = append(list.Values, values...)
-	return len(list.Values), nil
+	return list.RPush(values...), nil
 }
 
+// LPop removes and returns the first element of the list stored at key
 func (m *MemoryListStorage) LPop(key string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	list, ok := m.data[key]
-	if !ok || len(list.Values) == 0 {
-		return nil, ErrKeyNotFound
+	if !ok {
+		return nil, consts.ErrKeyNotFound
 	}
 
-	value := list.Values[0]
-	list.Values = list.Values[1:]
+	value, ok := list.LPop()
+	if !ok {
+		return nil, consts.ErrKeyNotFound
+	}
 
-	if len(list.Values) == 0 {
+	if list.Len() == 0 {
 		delete(m.data, key)
 	}
 
 	return value, nil
 }
 
+// RPop removes and returns the last element of the list stored at key
 func (m *MemoryListStorage) RPop(key string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	list, ok := m.data[key]
-	if !ok || len(list.Values) == 0 {
-		return nil, ErrKeyNotFound
+	if !ok {
+		return nil, consts.ErrKeyNotFound
 	}
 
-	lastIndex := len(list.Values) - 1
-	value := list.Values[lastIndex]
-	list.Values = list.Values[:lastIndex]
+	value, ok := list.RPop()
+	if !ok {
+		return nil, consts.ErrKeyNotFound
+	}
 
-	if len(list.Values) == 0 {
+	if list.Len() == 0 {
 		delete(m.data, key)
 	}
 
 	return value, nil
 }
 
-func (m *MemoryListStorage) LLen(key string) (int, error) {
+// LRange returns the specified elements of the list stored at key
+func (m *MemoryListStorage) LRange(key string, start, stop int64) ([][]byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	list, ok := m.data[key]
 	if !ok {
-		return 0, nil
+		return nil, consts.ErrKeyNotFound
 	}
 
-	return len(list.Values), nil
+	return list.LRange(start, stop), nil
 }
 
-func (m *MemoryListStorage) LRange(key string, start, stop int) ([][]byte, error) {
+// LIndex returns the element at index in the list stored at key
+func (m *MemoryListStorage) LIndex(key string, index int64) ([]byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	list, ok := m.data[key]
 	if !ok {
-		return [][]byte{}, nil
+		return nil, consts.ErrKeyNotFound
 	}
 
-	length := len(list.Values)
-	if start < 0 {
-		start = length + start
-	}
-	if stop < 0 {
-		stop = length + stop
+	value, ok := list.LIndex(index)
+	if !ok {
+		return nil, consts.ErrKeyNotFound
 	}
 
-	if start < 0 {
-		start = 0
-	}
-	if stop >= length {
-		stop = length - 1
+	return value, nil
+}
+
+// LSet sets the list element at index to value
+func (m *MemoryListStorage) LSet(key string, index int64, value []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	list, ok := m.data[key]
+	if !ok {
+		return consts.ErrKeyNotFound
 	}
 
-	if start > stop {
-		return [][]byte{}, nil
+	if !list.LSet(index, value) {
+		return consts.ErrIndexOutOfRange
 	}
 
-	return list.Values[start : stop+1], nil
+	return nil
+}
+
+// LLen returns the length of the list stored at key
+func (m *MemoryListStorage) LLen(key string) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	list, ok := m.data[key]
+	if !ok {
+		return 0, consts.ErrKeyNotFound
+	}
+
+	return list.Len(), nil
+}
+
+// Expire sets a timeout on key
+func (m *MemoryListStorage) Expire(key string, expiration time.Duration) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	list, ok := m.data[key]
+	if !ok {
+		return false, nil
+	}
+
+	list.SetExpire(time.Now().Add(expiration))
+	return true, nil
+}
+
+// TTL returns the remaining time to live of a key that has a timeout
+func (m *MemoryListStorage) TTL(key string) (time.Duration, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	list, ok := m.data[key]
+	if !ok {
+		return -2, nil // -2 indicates that the key does not exist
+	}
+
+	if list.Expire().IsZero() {
+		return -1, nil // -1 indicates that the key has no expiration time
+	}
+
+	ttl := time.Until(list.Expire())
+	if ttl < 0 {
+		delete(m.data, key)
+		return -2, nil
+	}
+
+	return ttl, nil
 }
