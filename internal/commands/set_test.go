@@ -12,7 +12,7 @@ func TestHandleSAdd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleSAdd failed: %v", err)
 	}
-	if msg.Type != "Integer" || msg.Content.(int) != 3 {
+	if msg.Type != "Integer" || msg.Content.(int64) != 3 {
 		t.Errorf("Expected Integer 3, got %v %v", msg.Type, msg.Content)
 	}
 
@@ -20,14 +20,17 @@ func TestHandleSAdd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleSAdd failed: %v", err)
 	}
-	if msg.Type != "Integer" || msg.Content.(int) != 1 {
+	if msg.Type != "Integer" || msg.Content.(int64) != 1 {
 		t.Errorf("Expected Integer 1, got %v %v", msg.Type, msg.Content)
 	}
 }
 
 func TestHandleSMembers(t *testing.T) {
 	s := storage.NewMemoryStorage()
-	s.SAdd("myset", "a", "b", "c")
+	_, err := handleSAdd(s, []string{"myset", "a", "b", "c"})
+	if err != nil {
+		t.Fatalf("SAdd failed: %v", err)
+	}
 
 	msg, err := handleSMembers(s, []string{"myset"})
 	if err != nil {
@@ -50,26 +53,32 @@ func TestHandleSMembers(t *testing.T) {
 
 func TestHandleSRem(t *testing.T) {
 	s := storage.NewMemoryStorage()
-	s.SAdd("myset", "a", "b", "c", "d")
+	_, err := handleSAdd(s, []string{"myset", "a", "b", "c", "d"})
+	if err != nil {
+		t.Fatalf("SAdd failed: %v", err)
+	}
 
 	msg, err := handleSRem(s, []string{"myset", "b", "c", "e"})
 	if err != nil {
 		t.Fatalf("handleSRem failed: %v", err)
 	}
-	if msg.Type != "Integer" || msg.Content.(int) != 2 {
+	if msg.Type != "Integer" || msg.Content.(int64) != 2 {
 		t.Errorf("Expected Integer 2, got %v %v", msg.Type, msg.Content)
 	}
 }
 
 func TestHandleSCard(t *testing.T) {
 	s := storage.NewMemoryStorage()
-	s.SAdd("myset", "a", "b", "c")
+	_, err := handleSAdd(s, []string{"myset", "a", "b", "c"})
+	if err != nil {
+		t.Fatalf("SAdd failed: %v", err)
+	}
 
 	msg, err := handleSCard(s, []string{"myset"})
 	if err != nil {
 		t.Fatalf("handleSCard failed: %v", err)
 	}
-	if msg.Type != "Integer" || msg.Content.(int) != 3 {
+	if msg.Type != "Integer" || msg.Content.(int64) != 3 {
 		t.Errorf("Expected Integer 3, got %v %v", msg.Type, msg.Content)
 	}
 }
