@@ -23,5 +23,6 @@ func init() {
 	registerHashCommands()
 	registerListCommands()
 	registerSetCommands()
+	registerZSetCommands()
 	registerGenericCommands()
 }
