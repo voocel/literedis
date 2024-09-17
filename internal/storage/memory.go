@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// 确保实现了所有接口方法
+var _ Storage = (*MemoryStorage)(nil)
+
 const DefaultDBCount = 16
 
 type Database struct {
@@ -15,7 +18,9 @@ type Database struct {
 	hashStorage   *MemoryHashStorage
 	listStorage   map[string]*dslist.QuickList
 	setStorage    *MemorySetStorage
+	zsetStorage   *MemoryZSetStorage
 	expiry        map[string]time.Time
+	mu            sync.RWMutex
 }
 
 type MemoryStorage struct {
@@ -36,9 +41,11 @@ func NewMemoryStorage() *MemoryStorage {
 			hashStorage:   NewMemoryHashStorage(),
 			listStorage:   make(map[string]*dslist.QuickList),
 			setStorage:    NewMemorySetStorage(),
+			zsetStorage:   NewMemoryZSetStorage(),
 			expiry:        make(map[string]time.Time),
 		}
 	}
+	ms.StartExpirationChecker(time.Minute)
 	return ms
 }
 
@@ -66,24 +73,58 @@ func (m *MemoryStorage) Select(index int) error {
 
 // ########################## String operations ##########################
 
-func (m *MemoryStorage) Set(key string, value []byte, expiration time.Duration) error {
+func (m *MemoryStorage) Set(key string, value []byte) error {
 	db := m.getCurrentDB()
-	err := db.stringStorage.Set(key, value, expiration)
-	if err == nil && expiration > 0 {
-		db.expiry[key] = time.Now().Add(expiration)
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	err := db.stringStorage.Set(key, value)
+	if err != nil {
+		return err
 	}
-	return err
+
+	// 如果键已经存在过期时间，我们应该删除它
+	delete(db.expiry, key)
+
+	return nil
 }
 
 func (m *MemoryStorage) Get(key string) ([]byte, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
 	db := m.getCurrentDB()
-	if m.isExpired(db, key) {
-		m.deleteKey(db, key)
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if m.isExpired(key) {
+		m.deleteKey(key)
 		return nil, ErrKeyNotFound
 	}
+
 	return db.stringStorage.Get(key)
+}
+
+func (m *MemoryStorage) isExpired(key string) bool {
+	db := m.getCurrentDB()
+	expireTime, exists := db.expiry[key]
+	if !exists {
+		return false
+	}
+	return time.Now().After(expireTime)
+}
+
+func (m *MemoryStorage) deleteKey(key string) {
+	db := m.getCurrentDB()
+	delete(db.stringStorage.data, key)
+	delete(db.hashStorage.data, key)
+	delete(db.listStorage, key)
+
+	if members, err := db.setStorage.SMembers(key); err == nil {
+		_, _ = db.setStorage.SRem(key, members...)
+	}
+	if db.zsetStorage != nil {
+		_, _ = db.zsetStorage.ZRem(key, "")
+	}
+
+	delete(db.expiry, key)
 }
 
 func (m *MemoryStorage) Append(key string, value []byte) (int, error) {
@@ -118,8 +159,8 @@ func (m *MemoryStorage) HSet(key string, fields map[string][]byte) (int, error) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	db := m.getCurrentDB()
-	if m.isExpired(db, key) {
-		m.deleteKey(db, key)
+	if m.isExpired(key) {
+		m.deleteKey(key)
 	}
 	return db.hashStorage.HSet(key, fields)
 }
@@ -128,8 +169,8 @@ func (m *MemoryStorage) HGet(key, field string) ([]byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	db := m.getCurrentDB()
-	if m.isExpired(db, key) {
-		m.deleteKey(db, key)
+	if m.isExpired(key) {
+		m.deleteKey(key)
 		return nil, ErrKeyNotFound
 	}
 	return db.hashStorage.HGet(key, field)
@@ -139,8 +180,8 @@ func (m *MemoryStorage) HDel(key string, fields ...string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	db := m.getCurrentDB()
-	if m.isExpired(db, key) {
-		m.deleteKey(db, key)
+	if m.isExpired(key) {
+		m.deleteKey(key)
 		return 0, nil
 	}
 	return db.hashStorage.HDel(key, fields...)
@@ -150,8 +191,8 @@ func (m *MemoryStorage) HLen(key string) (int, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	db := m.getCurrentDB()
-	if m.isExpired(db, key) {
-		m.deleteKey(db, key)
+	if m.isExpired(key) {
+		m.deleteKey(key)
 		return 0, nil
 	}
 	return db.hashStorage.HLen(key)
@@ -262,7 +303,7 @@ func (m *MemoryStorage) LLen(key string) (int, error) {
 	if !ok {
 		return 0, nil
 	}
-	if m.isExpired(db, key) {
+	if m.isExpired(key) {
 		delete(db.listStorage, key)
 		delete(db.expiry, key)
 		return 0, nil
@@ -313,8 +354,8 @@ func (m *MemoryStorage) SAdd(key string, members ...string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	db := m.getCurrentDB()
-	if m.isExpired(db, key) {
-		m.deleteKey(db, key)
+	if m.isExpired(key) {
+		m.deleteKey(key)
 	}
 	return db.setStorage.SAdd(key, members...)
 }
@@ -323,8 +364,8 @@ func (m *MemoryStorage) SMembers(key string) ([]string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	db := m.getCurrentDB()
-	if m.isExpired(db, key) {
-		m.deleteKey(db, key)
+	if m.isExpired(key) {
+		m.deleteKey(key)
 		return []string{}, nil
 	}
 	return db.setStorage.SMembers(key)
@@ -334,8 +375,8 @@ func (m *MemoryStorage) SRem(key string, members ...string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	db := m.getCurrentDB()
-	if m.isExpired(db, key) {
-		m.deleteKey(db, key)
+	if m.isExpired(key) {
+		m.deleteKey(key)
 		return 0, nil
 	}
 	return db.setStorage.SRem(key, members...)
@@ -345,11 +386,62 @@ func (m *MemoryStorage) SCard(key string) (int, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	db := m.getCurrentDB()
-	if m.isExpired(db, key) {
-		m.deleteKey(db, key)
+	if m.isExpired(key) {
+		m.deleteKey(key)
 		return 0, nil
 	}
 	return db.setStorage.SCard(key)
+}
+
+// ########################## ZSet operations ##########################
+
+func (m *MemoryStorage) ZAdd(key string, score float64, member string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	db := m.getCurrentDB()
+	return db.zsetStorage.ZAdd(key, score, member)
+}
+
+func (m *MemoryStorage) ZScore(key, member string) (float64, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	db := m.getCurrentDB()
+	return db.zsetStorage.ZScore(key, member)
+}
+
+func (m *MemoryStorage) ZRem(key string, member string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	db := m.getCurrentDB()
+	return db.zsetStorage.ZRem(key, member)
+}
+
+func (m *MemoryStorage) ZRange(key string, start, stop int64) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	db := m.getCurrentDB()
+	return db.zsetStorage.ZRange(key, start, stop)
+}
+
+func (m *MemoryStorage) ZRangeByScore(key string, min, max float64) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	db := m.getCurrentDB()
+	return db.zsetStorage.ZRangeByScore(key, min, max)
+}
+
+func (m *MemoryStorage) ZCard(key string) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	db := m.getCurrentDB()
+	return db.zsetStorage.ZCard(key)
+}
+
+func (m *MemoryStorage) ZIncrBy(key string, increment float64, member string) (float64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	db := m.getCurrentDB()
+	return db.zsetStorage.ZIncrBy(key, increment, member)
 }
 
 // ########################## Generic operations ##########################
@@ -379,8 +471,8 @@ func (m *MemoryStorage) Exists(key string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	db := m.getCurrentDB()
-	if m.isExpired(db, key) {
-		m.deleteKey(db, key)
+	if m.isExpired(key) {
+		m.deleteKey(key)
 		return false
 	}
 	_, existsString := db.stringStorage.data[key]
@@ -390,48 +482,52 @@ func (m *MemoryStorage) Exists(key string) bool {
 }
 
 func (m *MemoryStorage) Expire(key string, expiration time.Duration) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	db := m.getCurrentDB()
-	if _, ok := db.stringStorage.data[key]; ok {
-		db.expiry[key] = time.Now().Add(expiration)
-		return true, nil
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if _, exists := m.getAnyKey(key); !exists {
+		return false, nil
 	}
-	if _, ok := db.hashStorage.data[key]; ok {
+
+	if expiration > 0 {
 		db.expiry[key] = time.Now().Add(expiration)
-		return true, nil
+	} else {
+		delete(db.expiry, key)
 	}
-	if _, ok := db.listStorage[key]; ok {
-		db.expiry[key] = time.Now().Add(expiration)
-		return true, nil
-	}
-	return false, nil
+	return true, nil
 }
 
 func (m *MemoryStorage) TTL(key string) (time.Duration, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
 	db := m.getCurrentDB()
-	if expiry, ok := db.expiry[key]; ok {
-		ttl := time.Until(expiry)
-		if ttl < 0 {
-			m.deleteKey(db, key)
-			return -2, nil // -2 表示键不存在
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	expireTime, exists := db.expiry[key]
+	if !exists {
+		// 键存在，但没有设置过期时间
+		if _, keyExists := m.getAnyKey(key); keyExists {
+			return -1 * time.Second, nil
 		}
-		return ttl, nil
+		// 键不存在
+		return -2 * time.Second, nil
 	}
-	if m.Exists(key) {
-		return -1, nil // -1 表示键没有过期时间
+
+	ttl := time.Until(expireTime)
+	if ttl <= 0 {
+		m.deleteKey(key)
+		return -2 * time.Second, nil
 	}
-	return -2, nil // -2 表示键不存在
+
+	return ttl, nil
 }
 
 func (m *MemoryStorage) Type(key string) (string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	db := m.getCurrentDB()
-	if m.isExpired(db, key) {
-		m.deleteKey(db, key)
+	if m.isExpired(key) {
+		m.deleteKey(key)
 		return "", ErrKeyNotFound
 	}
 	if _, ok := db.stringStorage.data[key]; ok {
@@ -455,6 +551,7 @@ func (m *MemoryStorage) Flush() error {
 			hashStorage:   NewMemoryHashStorage(),
 			listStorage:   make(map[string]*dslist.QuickList),
 			setStorage:    NewMemorySetStorage(),
+			zsetStorage:   NewMemoryZSetStorage(),
 			expiry:        make(map[string]time.Time),
 		}
 	}
@@ -469,24 +566,53 @@ func (m *MemoryStorage) FlushDB() error {
 		hashStorage:   NewMemoryHashStorage(),
 		listStorage:   make(map[string]*dslist.QuickList),
 		setStorage:    NewMemorySetStorage(),
+		zsetStorage:   NewMemoryZSetStorage(),
 		expiry:        make(map[string]time.Time),
 	}
 	return nil
 }
 
-func (m *MemoryStorage) isExpired(db *Database, key string) bool {
-	if expiry, ok := db.expiry[key]; ok {
-		if time.Now().After(expiry) {
-			return true
+func (m *MemoryStorage) cleanExpired() {
+	for _, db := range m.databases {
+		db.mu.Lock()
+		now := time.Now()
+		for key, expireTime := range db.expiry {
+			if now.After(expireTime) {
+				m.deleteKey(key)
+				delete(db.expiry, key)
+			}
 		}
+		db.mu.Unlock()
 	}
-	return false
 }
 
-func (m *MemoryStorage) deleteKey(db *Database, key string) {
-	delete(db.stringStorage.data, key)
-	delete(db.hashStorage.data, key)
-	delete(db.listStorage, key)
-	delete(db.setStorage.data, key)
-	delete(db.expiry, key)
+func (m *MemoryStorage) StartExpirationChecker(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	go func() {
+		for range ticker.C {
+			m.cleanExpired()
+		}
+	}()
+}
+
+func (m *MemoryStorage) getAnyKey(key string) (interface{}, bool) {
+	db := m.getCurrentDB()
+	if _, ok := db.stringStorage.data[key]; ok {
+		return nil, true
+	}
+	if _, ok := db.hashStorage.data[key]; ok {
+		return nil, true
+	}
+	if _, ok := db.listStorage[key]; ok {
+		return nil, true
+	}
+	// 使用 SCard 来检查集合是否存在
+	if count, err := db.setStorage.SCard(key); err == nil && count > 0 {
+		return nil, true
+	}
+	// 假设 zsetStorage 有一个 ZCard 方法
+	if count, err := db.zsetStorage.ZCard(key); err == nil && count > 0 {
+		return nil, true
+	}
+	return nil, false
 }

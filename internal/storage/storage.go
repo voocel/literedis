@@ -13,6 +13,7 @@ type Storage interface {
 	HashStorage
 	ListStorage
 	SetStorage
+	ZSetStorage
 
 	Del(key string) (bool, error)
 	Exists(key string) bool
@@ -25,7 +26,7 @@ type Storage interface {
 }
 
 type StringStorage interface {
-	Set(key string, value []byte, expiration time.Duration) error
+	Set(key string, value []byte) error // 修改这里，移除 expiration 参数
 	Get(key string) ([]byte, error)
 	Append(key string, value []byte) (int, error)
 	GetRange(key string, start, end int) ([]byte, error)
@@ -54,4 +55,12 @@ type SetStorage interface {
 	SMembers(key string) ([]string, error)
 	SRem(key string, members ...string) (int, error)
 	SCard(key string) (int, error)
+}
+
+type ZSetStorage interface {
+	ZAdd(key string, score float64, member string) (int, error)
+	ZScore(key, member string) (float64, bool)
+	ZRem(key string, member string) (int, error)
+	ZRange(key string, start, stop int64) ([]string, error)
+	ZCard(key string) (int64, error)
 }
