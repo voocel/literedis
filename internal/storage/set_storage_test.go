@@ -2,6 +2,8 @@ package storage
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestMemorySetStorage_SAdd(t *testing.T) {
@@ -82,4 +84,22 @@ func TestMemorySetStorage_SCard(t *testing.T) {
 	if count != 2 {
 		t.Errorf("Expected count of 2 after removal, got %d", count)
 	}
+}
+
+func TestIntSetOptimization(t *testing.T) {
+	s := NewMemorySetStorage()
+
+	// 测试纯整数集合使用 IntSet
+	added, _ := s.SAdd("intset", "1", "2", "3")
+	assert.Equal(t, 3, added)
+
+	members, _ := s.SMembers("intset")
+	assert.ElementsMatch(t, []string{"1", "2", "3"}, members)
+
+	// 测试添加非整数元素时转换为哈希表
+	added, _ = s.SAdd("intset", "non-integer")
+	assert.Equal(t, 1, added)
+
+	members, _ = s.SMembers("intset")
+	assert.ElementsMatch(t, []string{"1", "2", "3", "non-integer"}, members)
 }
