@@ -4,6 +4,14 @@
 
 LiteRedis is a lightweight Redis-like in-memory storage system implemented in Go. It supports various data types such as strings, hashes, lists, and sets, and provides a simple network server to handle client requests.
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-snow?logo=python&logoColor=3776AB" alt="" />
+  <img src="https://img.shields.io/badge/Java-snow?logo=coffeescript&logoColor=FC4C02" alt="" />
+  <img src="https://img.shields.io/badge/Go-snow?logo=go&logoColor=00ADD8" alt="" />
+  <img src="https://img.shields.io/badge/Rust-snow?logo=rust&logoColor=000000" alt="" />
+  <img src="https://img.shields.io/badge/TypeScript-snow?logo=typescript&logoColor=3178C6" alt="" />
+</p>
+
 ## Features
 
 - Supported data types:
