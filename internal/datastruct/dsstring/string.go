@@ -114,3 +114,7 @@ func (s *SDS) SetRange(offset int, value []byte) int {
 	}
 	return s.len
 }
+
+func (s *SDS) Bytes() []byte {
+	return s.buf
+}
