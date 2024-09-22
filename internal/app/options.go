@@ -1,11 +1,20 @@
 package app
 
 import (
+	"compress/gzip"
 	"literedis/pkg/network"
 	"strings"
+	"time"
 )
 
 const defaultName = "literedis"
+
+type RDBConfig struct {
+	Filename         string
+	SaveInterval     time.Duration
+	CompressionLevel int
+	AutoSaveChanges  int
+}
 
 type options struct {
 	id           string
@@ -14,6 +23,7 @@ type options struct {
 	server       network.Server
 	clusterNodes []string
 	clusterMode  bool
+	rdbConfig    RDBConfig
 }
 
 type OptionFunc func(o *options)
@@ -21,6 +31,12 @@ type OptionFunc func(o *options)
 func defaultOptions() *options {
 	return &options{
 		name: defaultName,
+		rdbConfig: RDBConfig{
+			Filename:         "dump.rdb",
+			SaveInterval:     5 * time.Minute,
+			CompressionLevel: gzip.DefaultCompression,
+			AutoSaveChanges:  1000,
+		},
 	}
 }
 
@@ -52,4 +68,8 @@ func WithClusterNodes(nodes string) OptionFunc {
 
 func WithClusterMode(enable bool) OptionFunc {
 	return func(o *options) { o.clusterMode = enable }
+}
+
+func WithRDBConfig(config RDBConfig) OptionFunc {
+	return func(o *options) { o.rdbConfig = config }
 }

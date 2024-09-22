@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"literedis/config"
 	"literedis/internal/cluster"
 	"literedis/internal/commands"
 	"literedis/internal/consts"
@@ -13,7 +14,6 @@ import (
 	"literedis/pkg/network"
 	"literedis/pkg/network/tcp"
 	"literedis/pkg/protocol"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -27,69 +27,42 @@ type App struct {
 	cluster       *cluster.Cluster
 	handlers      map[string]commands.CommandHandler
 	rdbSaveTicker *time.Ticker
+	rdbConfig     storage.RDBConfig
 }
 
 func NewApp(opts ...OptionFunc) *App {
-	o := defaultOptions()
+	options := defaultOptions()
 	for _, opt := range opts {
-		opt(o)
+		opt(options)
 	}
+
 	app := &App{
-		opts:     o,
-		storage:  storage.NewMemoryStorage(),
-		protocol: protocol.NewRESPProtocol(),
-		handlers: make(map[string]commands.CommandHandler),
+		// ... 其他字段的初始化 ...
+		opts: options,
 	}
+
+	// 加载配置
+	config.LoadConfig()
+
+	rdbConfig := config.GetRDBConfig()
+	app.storage = storage.NewMemoryStorage()
+	app.storage.SetRDBConfig(rdbConfig)
+
 	if err := app.storage.LoadRDB(); err != nil {
-		if !os.IsNotExist(err) {
-			log.Errorf("Failed to load RDB: %v", err)
-		} else {
-			log.Infof("No existing RDB file found, starting with empty storage")
-		}
+		log.Errorf("Failed to load RDB: %v", err)
 	}
-	app.startRDBSaver()
-	if o.clusterMode {
-		app.cluster = cluster.NewCluster(o.nodeID)
-		// Add the local node to the cluster
-		app.cluster.AddNode(&cluster.Node{ID: o.nodeID, Address: ":8080"})
 
-		// Add other nodes from the clusterNodes list
-		for _, nodeAddr := range o.clusterNodes {
-			parts := strings.Split(nodeAddr, "@")
-			if len(parts) != 2 {
-				log.Errorf("Invalid cluster node address: %s", nodeAddr)
-				continue
-			}
-			nodeID, addr := parts[0], parts[1]
-			if nodeID != o.nodeID {
-				err := app.cluster.AddNode(&cluster.Node{ID: nodeID, Address: addr})
-				if err != nil {
-					log.Errorf("Failed to add node %s: %v", nodeID, err)
-				}
-			}
-		}
-
-		// Set the cluster instance in the storage
-		if ms, ok := app.storage.(*storage.MemoryStorage); ok {
-			ms.SetCluster(app.cluster)
-		} else {
-			log.Errorf("Unable to set cluster in storage: unexpected storage type")
-		}
-	}
 	app.startRDBSaver()
+
 	return app
 }
 
 func (a *App) startRDBSaver() {
-	a.rdbSaveTicker = time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(a.opts.rdbConfig.SaveInterval)
 	go func() {
-		for range a.rdbSaveTicker.C {
-			if ms, ok := a.storage.(*storage.MemoryStorage); ok {
-				if err := ms.RDB.BackgroundSave(); err != nil {
-					log.Errorf("Failed to start background RDB save: %v", err)
-				}
-			} else {
-				log.Errorf("Storage is not of type MemoryStorage")
+		for range ticker.C {
+			if err := a.storage.SaveRDB(); err != nil {
+				log.Errorf("Failed to start background RDB save: %v", err)
 			}
 		}
 	}()
@@ -266,4 +239,9 @@ func (a *App) sendErrorResponse(conn network.Conn, errMsg string) {
 	errResp := &protocol.Message{Type: "Error", Content: []byte(errMsg)}
 	respData, _ := a.protocol.Pack(errResp)
 	conn.Send(respData)
+}
+
+// 添加一个方法来获取RDB统计信息
+func (a *App) GetRDBStats() storage.RDBStats {
+	return a.storage.GetRDBStats()
 }

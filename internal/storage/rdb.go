@@ -8,6 +8,7 @@ import (
 	"errors"
 	"hash/crc32"
 	"io"
+	"literedis/config"
 	"os"
 	"sync/atomic"
 	"time"
@@ -22,22 +23,34 @@ type rdbHeader struct {
 	Version int
 }
 
-type RDBStorage struct {
+type RDBConfig struct {
 	Filename         string
-	Storage          *MemoryStorage
-	savingInProgress atomic.Bool
+	SaveInterval     time.Duration
+	CompressionLevel int
+	AutoSaveChanges  int
 }
 
-func NewRDBStorage(filename string, storage *MemoryStorage) *RDBStorage {
+type RDBStorage struct {
+	Config               config.RDBConfig
+	Storage              *MemoryStorage
+	savingInProgress     atomic.Bool
+	lastSaveTime         time.Time
+	changesSinceLastSave int
+	stats                RDBStats // 使用 storage 包中定义的 RDBStats
+}
+
+func NewRDBStorage(config config.RDBConfig, storage *MemoryStorage) *RDBStorage {
 	return &RDBStorage{
-		Filename: filename,
-		Storage:  storage,
+		Config:       config,
+		Storage:      storage,
+		lastSaveTime: time.Now(),
+		stats:        RDBStats{},
 	}
 }
 
 func (r *RDBStorage) Save() error {
-	log.Infof("Saving RDB to file: %s", r.Filename)
-	file, err := os.Create(r.Filename)
+	log.Infof("Saving RDB to file: %s", r.Config.Filename)
+	file, err := os.Create(r.Config.Filename)
 	if err != nil {
 		return err
 	}
@@ -65,8 +78,8 @@ func (r *RDBStorage) Save() error {
 }
 
 func (r *RDBStorage) Load() error {
-	log.Infof("Loading RDB from file: %s", r.Filename)
-	file, err := os.Open(r.Filename)
+	log.Infof("Loading RDB from file: %s", r.Config.Filename)
+	file, err := os.Open(r.Config.Filename)
 	if err != nil {
 		return err
 	}
@@ -85,7 +98,7 @@ func (r *RDBStorage) Load() error {
 		return err
 	}
 
-	// 读取存储的校验和
+	// 读取存储的校和
 	var storedChecksum uint32
 	if err := binary.Read(file, binary.LittleEndian, &storedChecksum); err != nil {
 		return err
@@ -131,6 +144,7 @@ func (r *RDBStorage) Load() error {
 }
 
 func (r *RDBStorage) SaveIncremental() error {
+	startTime := time.Now()
 	r.Storage.mu.RLock()
 	defer r.Storage.mu.RUnlock()
 
@@ -139,7 +153,7 @@ func (r *RDBStorage) SaveIncremental() error {
 		return nil
 	}
 
-	tempFilename := r.Filename + ".temp"
+	tempFilename := r.Config.Filename + ".temp"
 	file, err := os.Create(tempFilename)
 	if err != nil {
 		return err
@@ -152,7 +166,7 @@ func (r *RDBStorage) SaveIncremental() error {
 
 	encoder := gob.NewEncoder(gzipWriter)
 
-	// 写入头部信息
+	// 写入头部信
 	header := rdbHeader{Version: currentVersion}
 	if err := encoder.Encode(header); err != nil {
 		return err
@@ -197,13 +211,27 @@ func (r *RDBStorage) SaveIncremental() error {
 	}
 
 	// 原子性地替换旧的RDB文件
-	if err := os.Rename(tempFilename, r.Filename); err != nil {
+	if err := os.Rename(tempFilename, r.Config.Filename); err != nil {
 		return err
 	}
 
-	// 清除脏键记录
+	// 清除脏���记录
 	r.Storage.dirtyKeys = make(map[int]map[string]struct{})
 	r.Storage.lastSaveTime = time.Now()
+
+	// 更新统计信息
+	r.stats.LastSaveTime = startTime
+	r.stats.LastSaveDuration = time.Since(startTime)
+	r.stats.TotalSaves++
+	r.stats.TotalKeysSaved += len(r.Storage.dirtyKeys)
+
+	fileInfo, err := os.Stat(r.Config.Filename)
+	if err == nil {
+		r.stats.LastSaveSize = fileInfo.Size()
+	}
+
+	r.changesSinceLastSave = 0
+	r.lastSaveTime = time.Now()
 
 	return nil
 }
@@ -223,7 +251,7 @@ func (r *RDBStorage) encodeKey(encoder *gob.Encoder, dbIndex int, key string) er
 		}
 		return encoder.Encode(value)
 	}
-	// 对其他类型的数据进行类似的处理...
+	// 对其类型的数据进行类似的处理...
 
 	return nil
 }
@@ -278,7 +306,7 @@ func (r *RDBStorage) decodeDatabase(decoder *gob.Decoder) error {
 		expiry:        make(map[string]time.Time),
 	}
 
-	// 解码字符串数据
+	// 解码字串数据
 	if err := decoder.Decode(&db.stringStorage.data); err != nil {
 		return err
 	}
@@ -328,4 +356,21 @@ func (r *RDBStorage) BackgroundSave() error {
 	}()
 
 	return nil
+}
+
+func (r *RDBStorage) shouldAutoSave() bool {
+	timeSinceLastSave := time.Since(r.lastSaveTime)
+	return timeSinceLastSave >= r.Config.SaveInterval ||
+		r.changesSinceLastSave >= r.Config.AutoSaveChanges
+}
+
+func (r *RDBStorage) incrementChanges() {
+	r.changesSinceLastSave++
+	if r.shouldAutoSave() {
+		go r.BackgroundSave()
+	}
+}
+
+func (r *RDBStorage) GetStats() RDBStats {
+	return r.stats
 }

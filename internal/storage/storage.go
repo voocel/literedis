@@ -2,6 +2,7 @@ package storage
 
 import (
 	"errors"
+	"literedis/config"
 	"time"
 )
 
@@ -27,6 +28,16 @@ type Storage interface {
 	// 添加 RDB 相关的方法
 	SaveRDB() error
 	LoadRDB() error
+	GetRDBStats() RDBStats
+	SetRDBConfig(config config.RDBConfig)
+}
+
+type RDBStats struct {
+	LastSaveTime     time.Time
+	LastSaveDuration time.Duration
+	TotalSaves       int
+	TotalKeysSaved   int
+	LastSaveSize     int64
 }
 
 type StringStorage interface {
@@ -52,6 +63,8 @@ type ListStorage interface {
 	RPop(key string) ([]byte, error)
 	LLen(key string) (int, error)
 	LRange(key string, start, stop int) ([][]byte, error)
+	LIndex(key string, index int64) ([]byte, error)
+	LSet(key string, index int64, value []byte) error
 }
 
 type SetStorage interface {
