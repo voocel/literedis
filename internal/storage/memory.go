@@ -28,6 +28,7 @@ type MemoryStorage struct {
 	currentDBIndex int
 	mu             sync.RWMutex
 	cluster        *cluster.Cluster
+	rdb            *RDBStorage
 }
 
 func NewMemoryStorage() *MemoryStorage {
@@ -45,6 +46,7 @@ func NewMemoryStorage() *MemoryStorage {
 			expiry:        make(map[string]time.Time),
 		}
 	}
+	ms.rdb = NewRDBStorage("dump.rdb", ms)
 	ms.StartExpirationChecker(time.Minute)
 	return ms
 }
@@ -615,4 +617,14 @@ func (m *MemoryStorage) getAnyKey(key string) (interface{}, bool) {
 		return nil, true
 	}
 	return nil, false
+}
+
+// SaveRDB 保存 RDB 文件
+func (m *MemoryStorage) SaveRDB() error {
+	return m.rdb.Save()
+}
+
+// LoadRDB 加载 RDB 文件
+func (m *MemoryStorage) LoadRDB() error {
+	return m.rdb.Load()
 }

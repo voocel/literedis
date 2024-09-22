@@ -13,17 +13,20 @@ import (
 	"literedis/pkg/network"
 	"literedis/pkg/network/tcp"
 	"literedis/pkg/protocol"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type App struct {
-	srv      network.Server
-	opts     *options
-	storage  storage.Storage
-	protocol protocol.Protocol
-	cluster  *cluster.Cluster
-	handlers map[string]commands.CommandHandler
+	srv           network.Server
+	opts          *options
+	storage       storage.Storage
+	protocol      protocol.Protocol
+	cluster       *cluster.Cluster
+	handlers      map[string]commands.CommandHandler
+	rdbSaveTicker *time.Ticker
 }
 
 func NewApp(opts ...OptionFunc) *App {
@@ -37,7 +40,14 @@ func NewApp(opts ...OptionFunc) *App {
 		protocol: protocol.NewRESPProtocol(),
 		handlers: make(map[string]commands.CommandHandler),
 	}
-	app.registerHandlers()
+	if err := app.storage.LoadRDB(); err != nil {
+		if !os.IsNotExist(err) {
+			log.Errorf("Failed to load RDB: %v", err)
+		} else {
+			log.Infof("No existing RDB file found, starting with empty storage")
+		}
+	}
+	app.startRDBSaver()
 	if o.clusterMode {
 		app.cluster = cluster.NewCluster(o.nodeID)
 		// Add the local node to the cluster
@@ -66,7 +76,19 @@ func NewApp(opts ...OptionFunc) *App {
 			log.Errorf("Unable to set cluster in storage: unexpected storage type")
 		}
 	}
+	app.startRDBSaver()
 	return app
+}
+
+func (a *App) startRDBSaver() {
+	a.rdbSaveTicker = time.NewTicker(5 * time.Minute) // 每5分钟保存一次
+	go func() {
+		for range a.rdbSaveTicker.C {
+			if err := a.storage.SaveRDB(); err != nil {
+				log.Errorf("Failed to save RDB: %v", err)
+			}
+		}
+	}()
 }
 
 // Implement handleClusterOps method
@@ -147,6 +169,7 @@ func (a *App) handleReceive(conn network.Conn, data []byte) {
 	msg, err := a.protocol.Unpack(bytes.NewReader(data))
 	if err != nil {
 		log.Errorf("unpack data to struct failed: %v", err)
+		a.sendErrorResponse(conn, "ERR unpack")
 		return
 	}
 	log.Debugf("receive message type:%v, value: %v", msg.Type, msg.Content)
@@ -229,4 +252,14 @@ func readBulkArgs(reader *bufio.Reader) (string, error) {
 
 func (a *App) Stop() {
 	a.srv.Stop()
+	a.rdbSaveTicker.Stop()
+	if err := a.storage.SaveRDB(); err != nil {
+		log.Errorf("Failed to save final RDB: %v", err)
+	}
+}
+
+func (a *App) sendErrorResponse(conn network.Conn, errMsg string) {
+	errResp := &protocol.Message{Type: "Error", Content: []byte(errMsg)}
+	respData, _ := a.protocol.Pack(errResp)
+	conn.Send(respData)
 }

@@ -23,10 +23,14 @@ type Storage interface {
 	Flush() error
 	FlushDB() error
 	Select(index int) error
+
+	// 添加 RDB 相关的方法
+	SaveRDB() error
+	LoadRDB() error
 }
 
 type StringStorage interface {
-	Set(key string, value []byte) error // 修改这里，移除 expiration 参数
+	Set(key string, value []byte) error
 	Get(key string) ([]byte, error)
 	Append(key string, value []byte) (int, error)
 	GetRange(key string, start, end int) ([]byte, error)
