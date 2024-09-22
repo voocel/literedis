@@ -28,13 +28,17 @@ type MemoryStorage struct {
 	currentDBIndex int
 	mu             sync.RWMutex
 	cluster        *cluster.Cluster
-	rdb            *RDBStorage
+	RDB            *RDBStorage
+	lastSaveTime   time.Time
+	dirtyKeys      map[int]map[string]struct{} // 数据库索引 -> 脏键集合
 }
 
 func NewMemoryStorage() *MemoryStorage {
 	ms := &MemoryStorage{
 		databases:      make([]*Database, DefaultDBCount),
 		currentDBIndex: 0,
+		lastSaveTime:   time.Now(),
+		dirtyKeys:      make(map[int]map[string]struct{}),
 	}
 	for i := 0; i < DefaultDBCount; i++ {
 		ms.databases[i] = &Database{
@@ -46,7 +50,7 @@ func NewMemoryStorage() *MemoryStorage {
 			expiry:        make(map[string]time.Time),
 		}
 	}
-	ms.rdb = NewRDBStorage("dump.rdb", ms)
+	ms.RDB = NewRDBStorage("dump.rdb", ms)
 	ms.StartExpirationChecker(time.Minute)
 	return ms
 }
@@ -84,6 +88,9 @@ func (m *MemoryStorage) Set(key string, value []byte) error {
 	if err != nil {
 		return err
 	}
+
+	// 标记键为脏
+	m.markDirty(m.currentDBIndex, key)
 
 	// 如果键已经存在过期时间，我们应该删除它
 	delete(db.expiry, key)
@@ -133,7 +140,11 @@ func (m *MemoryStorage) Append(key string, value []byte) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	db := m.getCurrentDB()
-	return db.stringStorage.Append(key, value)
+	length, err := db.stringStorage.Append(key, value)
+	if err == nil {
+		m.markDirty(m.currentDBIndex, key)
+	}
+	return length, err
 }
 
 func (m *MemoryStorage) GetRange(key string, start, end int) ([]byte, error) {
@@ -147,7 +158,11 @@ func (m *MemoryStorage) SetRange(key string, offset int, value []byte) (int, err
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	db := m.getCurrentDB()
-	return db.stringStorage.SetRange(key, offset, value)
+	length, err := db.stringStorage.SetRange(key, offset, value)
+	if err == nil {
+		m.markDirty(m.currentDBIndex, key)
+	}
+	return length, err
 }
 
 func (m *MemoryStorage) StrLen(key string) (int, error) {
@@ -164,7 +179,11 @@ func (m *MemoryStorage) HSet(key string, fields map[string][]byte) (int, error) 
 	if m.isExpired(key) {
 		m.deleteKey(key)
 	}
-	return db.hashStorage.HSet(key, fields)
+	count, err := db.hashStorage.HSet(key, fields)
+	if err == nil {
+		m.markDirty(m.currentDBIndex, key)
+	}
+	return count, err
 }
 
 func (m *MemoryStorage) HGet(key, field string) ([]byte, error) {
@@ -186,7 +205,11 @@ func (m *MemoryStorage) HDel(key string, fields ...string) (int, error) {
 		m.deleteKey(key)
 		return 0, nil
 	}
-	return db.hashStorage.HDel(key, fields...)
+	count, err := db.hashStorage.HDel(key, fields...)
+	if err == nil {
+		m.markDirty(m.currentDBIndex, key)
+	}
+	return count, err
 }
 
 func (m *MemoryStorage) HLen(key string) (int, error) {
@@ -216,6 +239,7 @@ func (m *MemoryStorage) LPush(key string, values ...[]byte) (int, error) {
 		delete(db.expiry, key)
 	}
 	length := list.LPush(values...)
+	m.markDirty(m.currentDBIndex, key)
 	return int(length), nil
 }
 
@@ -232,6 +256,7 @@ func (m *MemoryStorage) RPush(key string, values ...[]byte) (int, error) {
 		db.listStorage[key] = list
 	}
 	length := list.RPush(values...)
+	m.markDirty(m.currentDBIndex, key)
 	return int(length), nil
 }
 
@@ -255,6 +280,7 @@ func (m *MemoryStorage) LPop(key string) ([]byte, error) {
 	if list.Len() == 0 {
 		delete(db.listStorage, key)
 	}
+	m.markDirty(m.currentDBIndex, key)
 	return value, nil
 }
 
@@ -278,6 +304,7 @@ func (m *MemoryStorage) RPop(key string) ([]byte, error) {
 	if list.Len() == 0 {
 		delete(db.listStorage, key)
 	}
+	m.markDirty(m.currentDBIndex, key)
 	return value, nil
 }
 
@@ -347,6 +374,7 @@ func (m *MemoryStorage) LSet(key string, index int64, value []byte) error {
 	if !list.LSet(index, value) {
 		return consts.ErrIndexOutOfRange
 	}
+	m.markDirty(m.currentDBIndex, key)
 	return nil
 }
 
@@ -359,7 +387,11 @@ func (m *MemoryStorage) SAdd(key string, members ...string) (int, error) {
 	if m.isExpired(key) {
 		m.deleteKey(key)
 	}
-	return db.setStorage.SAdd(key, members...)
+	count, err := db.setStorage.SAdd(key, members...)
+	if err == nil {
+		m.markDirty(m.currentDBIndex, key)
+	}
+	return count, err
 }
 
 func (m *MemoryStorage) SMembers(key string) ([]string, error) {
@@ -381,7 +413,11 @@ func (m *MemoryStorage) SRem(key string, members ...string) (int, error) {
 		m.deleteKey(key)
 		return 0, nil
 	}
-	return db.setStorage.SRem(key, members...)
+	count, err := db.setStorage.SRem(key, members...)
+	if err == nil {
+		m.markDirty(m.currentDBIndex, key)
+	}
+	return count, err
 }
 
 func (m *MemoryStorage) SCard(key string) (int, error) {
@@ -401,7 +437,11 @@ func (m *MemoryStorage) ZAdd(key string, score float64, member string) (int, err
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	db := m.getCurrentDB()
-	return db.zsetStorage.ZAdd(key, score, member)
+	count, err := db.zsetStorage.ZAdd(key, score, member)
+	if err == nil {
+		m.markDirty(m.currentDBIndex, key)
+	}
+	return count, err
 }
 
 func (m *MemoryStorage) ZScore(key, member string) (float64, bool) {
@@ -415,7 +455,11 @@ func (m *MemoryStorage) ZRem(key string, member string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	db := m.getCurrentDB()
-	return db.zsetStorage.ZRem(key, member)
+	count, err := db.zsetStorage.ZRem(key, member)
+	if err == nil {
+		m.markDirty(m.currentDBIndex, key)
+	}
+	return count, err
 }
 
 func (m *MemoryStorage) ZRange(key string, start, stop int64) ([]string, error) {
@@ -443,7 +487,11 @@ func (m *MemoryStorage) ZIncrBy(key string, increment float64, member string) (f
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	db := m.getCurrentDB()
-	return db.zsetStorage.ZIncrBy(key, increment, member)
+	score, err := db.zsetStorage.ZIncrBy(key, increment, member)
+	if err == nil {
+		m.markDirty(m.currentDBIndex, key)
+	}
+	return score, err
 }
 
 // ########################## Generic operations ##########################
@@ -466,6 +514,9 @@ func (m *MemoryStorage) Del(key string) (bool, error) {
 		deleted = true
 	}
 	delete(db.expiry, key)
+	if deleted {
+		m.markDirty(m.currentDBIndex, key)
+	}
 	return deleted, nil
 }
 
@@ -497,6 +548,7 @@ func (m *MemoryStorage) Expire(key string, expiration time.Duration) (bool, erro
 	} else {
 		delete(db.expiry, key)
 	}
+	m.markDirty(m.currentDBIndex, key)
 	return true, nil
 }
 
@@ -557,6 +609,7 @@ func (m *MemoryStorage) Flush() error {
 			expiry:        make(map[string]time.Time),
 		}
 	}
+	m.dirtyKeys = make(map[int]map[string]struct{})
 	return nil
 }
 
@@ -571,6 +624,7 @@ func (m *MemoryStorage) FlushDB() error {
 		zsetStorage:   NewMemoryZSetStorage(),
 		expiry:        make(map[string]time.Time),
 	}
+	m.dirtyKeys[m.currentDBIndex] = make(map[string]struct{})
 	return nil
 }
 
@@ -621,10 +675,20 @@ func (m *MemoryStorage) getAnyKey(key string) (interface{}, bool) {
 
 // SaveRDB 保存 RDB 文件
 func (m *MemoryStorage) SaveRDB() error {
-	return m.rdb.Save()
+	return m.RDB.SaveIncremental()
 }
 
 // LoadRDB 加载 RDB 文件
 func (m *MemoryStorage) LoadRDB() error {
-	return m.rdb.Load()
+	return m.RDB.Load()
+}
+
+// 在每次修改操作后调用此方法
+func (m *MemoryStorage) markDirty(dbIndex int, key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.dirtyKeys[dbIndex]; !ok {
+		m.dirtyKeys[dbIndex] = make(map[string]struct{})
+	}
+	m.dirtyKeys[dbIndex][key] = struct{}{}
 }

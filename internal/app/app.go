@@ -81,11 +81,15 @@ func NewApp(opts ...OptionFunc) *App {
 }
 
 func (a *App) startRDBSaver() {
-	a.rdbSaveTicker = time.NewTicker(5 * time.Minute) // 每5分钟保存一次
+	a.rdbSaveTicker = time.NewTicker(5 * time.Minute)
 	go func() {
 		for range a.rdbSaveTicker.C {
-			if err := a.storage.SaveRDB(); err != nil {
-				log.Errorf("Failed to save RDB: %v", err)
+			if ms, ok := a.storage.(*storage.MemoryStorage); ok {
+				if err := ms.RDB.BackgroundSave(); err != nil {
+					log.Errorf("Failed to start background RDB save: %v", err)
+				}
+			} else {
+				log.Errorf("Storage is not of type MemoryStorage")
 			}
 		}
 	}()

@@ -1,17 +1,31 @@
 package storage
 
 import (
+	"bytes"
+	"compress/gzip"
+	"encoding/binary"
 	"encoding/gob"
+	"errors"
+	"hash/crc32"
+	"io"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"literedis/internal/datastruct/dslist"
 	"literedis/pkg/log"
 )
 
+const currentVersion = 1
+
+type rdbHeader struct {
+	Version int
+}
+
 type RDBStorage struct {
-	Filename string
-	Storage  *MemoryStorage
+	Filename         string
+	Storage          *MemoryStorage
+	savingInProgress atomic.Bool
 }
 
 func NewRDBStorage(filename string, storage *MemoryStorage) *RDBStorage {
@@ -58,7 +72,41 @@ func (r *RDBStorage) Load() error {
 	}
 	defer file.Close()
 
-	decoder := gob.NewDecoder(file)
+	// 获取文件大小
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	fileSize := fileInfo.Size()
+
+	// 读取除校验和外的所有数据
+	data := make([]byte, fileSize-4) // 4 bytes for checksum
+	if _, err := io.ReadFull(file, data); err != nil {
+		return err
+	}
+
+	// 读取存储的校验和
+	var storedChecksum uint32
+	if err := binary.Read(file, binary.LittleEndian, &storedChecksum); err != nil {
+		return err
+	}
+
+	// 计算实际校验和
+	calculatedChecksum := crc32.ChecksumIEEE(data)
+
+	// 验证校验和
+	if storedChecksum != calculatedChecksum {
+		return errors.New("RDB file is corrupted: checksum mismatch")
+	}
+
+	// 创建一个gzip读取器
+	gzipReader, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	defer gzipReader.Close()
+
+	decoder := gob.NewDecoder(gzipReader)
 
 	// 解码数据库数量
 	var dbCount int
@@ -82,6 +130,104 @@ func (r *RDBStorage) Load() error {
 	return nil
 }
 
+func (r *RDBStorage) SaveIncremental() error {
+	r.Storage.mu.RLock()
+	defer r.Storage.mu.RUnlock()
+
+	if len(r.Storage.dirtyKeys) == 0 {
+		log.Info("No changes since last save, skipping RDB save")
+		return nil
+	}
+
+	tempFilename := r.Filename + ".temp"
+	file, err := os.Create(tempFilename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	var buf bytes.Buffer
+	gzipWriter := gzip.NewWriter(&buf)
+	defer gzipWriter.Close()
+
+	encoder := gob.NewEncoder(gzipWriter)
+
+	// 写入头部信息
+	header := rdbHeader{Version: currentVersion}
+	if err := encoder.Encode(header); err != nil {
+		return err
+	}
+
+	// 写入增量数据
+	for dbIndex, keys := range r.Storage.dirtyKeys {
+		if err := encoder.Encode(dbIndex); err != nil {
+			return err
+		}
+		if err := encoder.Encode(len(keys)); err != nil {
+			return err
+		}
+		for key := range keys {
+			if err := r.encodeKey(encoder, dbIndex, key); err != nil {
+				return err
+			}
+		}
+	}
+
+	// 写入结束标记
+	if err := encoder.Encode(-1); err != nil {
+		return err
+	}
+
+	// 关闭gzip写入器
+	if err := gzipWriter.Close(); err != nil {
+		return err
+	}
+
+	// 计算校验和
+	checksum := crc32.ChecksumIEEE(buf.Bytes())
+
+	// 写入校验和
+	if err := binary.Write(file, binary.LittleEndian, checksum); err != nil {
+		return err
+	}
+
+	// 将缓冲区的内容写入文件
+	if _, err := file.Write(buf.Bytes()); err != nil {
+		return err
+	}
+
+	// 原子性地替换旧的RDB文件
+	if err := os.Rename(tempFilename, r.Filename); err != nil {
+		return err
+	}
+
+	// 清除脏键记录
+	r.Storage.dirtyKeys = make(map[int]map[string]struct{})
+	r.Storage.lastSaveTime = time.Now()
+
+	return nil
+}
+
+func (r *RDBStorage) encodeKey(encoder *gob.Encoder, dbIndex int, key string) error {
+	db := r.Storage.databases[dbIndex]
+	if err := encoder.Encode(key); err != nil {
+		return err
+	}
+
+	// 根据键的类型进行编码
+	// 这里需要根据你的具体实现来编码不同类型的数据
+	// 例如:
+	if value, ok := db.stringStorage.data[key]; ok {
+		if err := encoder.Encode("string"); err != nil {
+			return err
+		}
+		return encoder.Encode(value)
+	}
+	// 对其他类型的数据进行类似的处理...
+
+	return nil
+}
+
 func (r *RDBStorage) encodeDatabase(encoder *gob.Encoder, index int, db *Database) error {
 	// 编码数据库索引
 	if err := encoder.Encode(index); err != nil {
@@ -98,7 +244,7 @@ func (r *RDBStorage) encodeDatabase(encoder *gob.Encoder, index int, db *Databas
 		return err
 	}
 
-	// 编码列表数据
+	// 编码列数据
 	if err := encoder.Encode(db.listStorage); err != nil {
 		return err
 	}
@@ -163,5 +309,23 @@ func (r *RDBStorage) decodeDatabase(decoder *gob.Decoder) error {
 	}
 
 	r.Storage.databases[dbIndex] = db
+	return nil
+}
+
+func (r *RDBStorage) BackgroundSave() error {
+	if !r.savingInProgress.CompareAndSwap(false, true) {
+		return errors.New("background save already in progress")
+	}
+
+	go func() {
+		defer r.savingInProgress.Store(false)
+
+		if err := r.SaveIncremental(); err != nil {
+			log.Errorf("Background RDB save failed: %v", err)
+		} else {
+			log.Info("Background RDB save completed successfully")
+		}
+	}()
+
 	return nil
 }
