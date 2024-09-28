@@ -1,0 +1,16 @@
+[package]
+name = "literedis"
+version = "0.1.0"
+edition = "2021"
+authors = ["voocel <voocel@gmail.com>"]
+description = "A Rust SDK for LiteRedis, a lightweight Redis-like in-memory storage system"
+license = "MIT"
+repository = "https://github.com/voocel/literedis"
+keywords = ["redis", "database", "cache", "client"]
+categories = ["database", "caching"]
+
+[dependencies]
+thiserror = "1.0"
+log = "0.4"
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
