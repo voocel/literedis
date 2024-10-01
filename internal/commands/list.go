@@ -2,6 +2,7 @@ package commands
 
 import (
 	"errors"
+	"literedis/internal/consts"
 	"literedis/internal/storage"
 	"literedis/pkg/protocol"
 	"strconv"
@@ -18,7 +19,7 @@ func registerListCommands() {
 
 func handleLPush(s storage.Storage, args []string) (*protocol.Message, error) {
 	if len(args) < 2 {
-		return nil, errors.New("LPUSH command requires at least two arguments")
+		return nil, consts.ErrInvalidArgument
 	}
 
 	key := args[0]
@@ -101,21 +102,24 @@ func handleLLen(s storage.Storage, args []string) (*protocol.Message, error) {
 
 func handleLRange(s storage.Storage, args []string) (*protocol.Message, error) {
 	if len(args) != 3 {
-		return nil, errors.New("LRANGE command requires three arguments")
+		return nil, consts.ErrInvalidArgument
 	}
 
 	key := args[0]
 	start, err := strconv.Atoi(args[1])
 	if err != nil {
-		return nil, errors.New("invalid start index")
+		return nil, consts.ErrNotInteger
 	}
 	stop, err := strconv.Atoi(args[2])
 	if err != nil {
-		return nil, errors.New("invalid stop index")
+		return nil, consts.ErrNotInteger
 	}
 
 	values, err := s.LRange(key, start, stop)
 	if err != nil {
+		if err == consts.ErrKeyNotFound {
+			return &protocol.Message{Type: "Array", Content: [][]byte{}}, nil
+		}
 		return nil, err
 	}
 
