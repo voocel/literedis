@@ -6,6 +6,7 @@ import (
 	"literedis/internal/cluster"
 	"literedis/internal/consts"
 	"literedis/internal/datastruct/dslist"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -33,6 +34,8 @@ type MemoryStorage struct {
 	RDB            *RDBStorage
 	lastSaveTime   time.Time
 	dirtyKeys      map[int]map[string]struct{} // 数据库索引 -> 脏键集合
+	data           map[string]interface{}
+	mutex          sync.RWMutex
 }
 
 func NewMemoryStorage(rdbConfig ...config.RDBConfig) Storage {
@@ -41,6 +44,7 @@ func NewMemoryStorage(rdbConfig ...config.RDBConfig) Storage {
 		currentDBIndex: 0,
 		lastSaveTime:   time.Now(),
 		dirtyKeys:      make(map[int]map[string]struct{}),
+		data:           make(map[string]interface{}),
 	}
 	for i := 0; i < DefaultDBCount; i++ {
 		ms.databases[i] = &Database{
@@ -744,4 +748,18 @@ func (m *MemoryStorage) SetRDBConfig(config config.RDBConfig) {
 	} else {
 		m.RDB.Config = config
 	}
+}
+
+func (m *MemoryStorage) Keys(pattern string) []string {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+
+	var keys []string
+	for key := range m.data {
+		matched, err := filepath.Match(pattern, key)
+		if err == nil && matched {
+			keys = append(keys, key)
+		}
+	}
+	return keys
 }

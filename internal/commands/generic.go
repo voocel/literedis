@@ -11,6 +11,7 @@ func registerGenericCommands() {
 	RegisterCommand("FLUSHALL", handleFlushAll)
 	RegisterCommand("FLUSHDB", handleFlushDB)
 	RegisterCommand("SELECT", handleSelect)
+	RegisterCommand("KEYS", handleKeys)
 }
 
 func handleFlushAll(storage storage.Storage, args []string) (*protocol.Message, error) {
@@ -55,4 +56,13 @@ func handleSelect(storage storage.Storage, args []string) (*protocol.Message, er
 	}
 
 	return &protocol.Message{Type: "SimpleString", Content: "OK"}, nil
+}
+
+func handleKeys(s storage.Storage, args []string) (*protocol.Message, error) {
+	if len(args) != 1 {
+		return nil, errors.New("ERR wrong number of arguments for 'keys' command")
+	}
+	pattern := args[0]
+	keys := s.Keys(pattern)
+	return &protocol.Message{Type: "Array", Content: keys}, nil
 }

@@ -16,6 +16,7 @@ type Storage interface {
 	SetStorage
 	ZSetStorage
 
+	Keys(pattern string) []string
 	Del(key string) (bool, error)
 	Exists(key string) bool
 	Expire(key string, expiration time.Duration) (bool, error)
