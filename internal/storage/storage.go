@@ -15,22 +15,8 @@ type Storage interface {
 	ListStorage
 	SetStorage
 	ZSetStorage
-
-	Keys(pattern string) []string
-	Del(key string) (bool, error)
-	Exists(key string) bool
-	Expire(key string, expiration time.Duration) (bool, error)
-	TTL(key string) (time.Duration, error)
-	Type(key string) (string, error)
-	Flush() error
-	FlushDB() error
-	Select(index int) error
-
-	// 添加 RDB 相关的方法
-	SaveRDB() error
-	LoadRDB() error
-	GetRDBStats() RDBStats
-	SetRDBConfig(config config.RDBConfig)
+	KeyStorage
+	ServerStorage
 }
 
 type RDBStats struct {
@@ -41,6 +27,7 @@ type RDBStats struct {
 	LastSaveSize     int64
 }
 
+// StringStorage 接口定义了字符串类型的操作
 type StringStorage interface {
 	Set(key string, value []byte) error
 	Get(key string) ([]byte, error)
@@ -50,6 +37,7 @@ type StringStorage interface {
 	StrLen(key string) (int, error)
 }
 
+// HashStorage 接口定义了哈希类型的操作
 type HashStorage interface {
 	HSet(key string, fields map[string][]byte) (int, error)
 	HGet(key, field string) ([]byte, error)
@@ -57,6 +45,7 @@ type HashStorage interface {
 	HLen(key string) (int, error)
 }
 
+// ListStorage 接口定义了列表类型的操作
 type ListStorage interface {
 	LPush(key string, values ...[]byte) (int, error)
 	RPush(key string, values ...[]byte) (int, error)
@@ -68,6 +57,7 @@ type ListStorage interface {
 	LSet(key string, index int64, value []byte) error
 }
 
+// SetStorage 接口定义了集合类型的操作
 type SetStorage interface {
 	SAdd(key string, members ...string) (int, error)
 	SMembers(key string) ([]string, error)
@@ -75,10 +65,34 @@ type SetStorage interface {
 	SCard(key string) (int, error)
 }
 
+// ZSetStorage 接口定义了有序集合类型的操作
 type ZSetStorage interface {
 	ZAdd(key string, score float64, member string) (int, error)
 	ZScore(key, member string) (float64, bool)
 	ZRem(key string, member string) (int, error)
 	ZRange(key string, start, stop int64) ([]string, error)
 	ZCard(key string) (int64, error)
+}
+
+// KeyStorage 接口定义了通用的键操作
+type KeyStorage interface {
+	Keys(pattern string) []string
+	Del(key string) (bool, error)
+	Exists(key string) bool
+	Expire(key string, expiration time.Duration) (bool, error)
+	TTL(key string) (time.Duration, error)
+	Type(key string) (string, error)
+}
+
+// ServerStorage 接口定义了服务器级别的操作
+type ServerStorage interface {
+	Flush() error
+	FlushDB() error
+	Select(index int) error
+
+	// RDB 相关的方法
+	SaveRDB() error
+	LoadRDB() error
+	GetRDBStats() RDBStats
+	SetRDBConfig(config config.RDBConfig)
 }

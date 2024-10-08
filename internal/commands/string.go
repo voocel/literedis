@@ -10,6 +10,14 @@ import (
 	"time"
 )
 
+func registerStringCommands() {
+	RegisterCommand("SET", handleSet)
+	RegisterCommand("GET", handleGet)
+	RegisterCommand("APPEND", handleAppend)
+	RegisterCommand("GETRANGE", handleGetRange)
+	RegisterCommand("SETRANGE", handleSetRange)
+}
+
 func handleSet(s storage.Storage, args []string) (*protocol.Message, error) {
 	if len(args) < 2 {
 		return nil, errors.New("SET command requires at least two arguments")
@@ -65,65 +73,6 @@ func handleGet(s storage.Storage, args []string) (*protocol.Message, error) {
 	return &protocol.Message{Type: "BulkString", Content: value}, nil
 }
 
-func handleDel(s storage.Storage, args []string) (*protocol.Message, error) {
-	if len(args) < 1 {
-		return nil, errors.New("DEL command requires at least one argument")
-	}
-
-	count := 0
-	for _, key := range args {
-		deleted, err := s.Del(key)
-		if err != nil {
-			return nil, err
-		}
-		if deleted {
-			count++
-		}
-	}
-
-	return &protocol.Message{Type: "Integer", Content: count}, nil
-}
-
-func handleExists(s storage.Storage, args []string) (*protocol.Message, error) {
-	if len(args) < 1 {
-		return nil, errors.New("EXISTS command requires at least one argument")
-	}
-
-	count := 0
-	for _, key := range args {
-		exists := s.Exists(key)
-		if exists {
-			count++
-		}
-	}
-
-	return &protocol.Message{Type: "Integer", Content: count}, nil
-}
-
-func handleExpire(s storage.Storage, args []string) (*protocol.Message, error) {
-	if len(args) != 2 {
-		return nil, errors.New("EXPIRE command requires two arguments")
-	}
-
-	key := args[0]
-	seconds, err := strconv.Atoi(args[1])
-	if err != nil {
-		return nil, fmt.Errorf("invalid expiration time: %v", err)
-	}
-
-	ok, err := s.Expire(key, time.Duration(seconds)*time.Second)
-	if err != nil {
-		return nil, err
-	}
-
-	result := 0
-	if ok {
-		result = 1
-	}
-
-	return &protocol.Message{Type: "Integer", Content: result}, nil
-}
-
 func handleAppend(s storage.Storage, args []string) (*protocol.Message, error) {
 	if len(args) != 2 {
 		return nil, errors.New("APPEND command requires two arguments")
@@ -171,15 +120,4 @@ func handleSetRange(s storage.Storage, args []string) (*protocol.Message, error)
 		return nil, err
 	}
 	return &protocol.Message{Type: "Integer", Content: int64(newLength)}, nil
-}
-
-func registerStringCommands() {
-	RegisterCommand("SET", handleSet)
-	RegisterCommand("GET", handleGet)
-	RegisterCommand("DEL", handleDel)
-	RegisterCommand("APPEND", handleAppend)
-	RegisterCommand("GETRANGE", handleGetRange)
-	RegisterCommand("SETRANGE", handleSetRange)
-	RegisterCommand("EXISTS", handleExists)
-	RegisterCommand("EXPIRE", handleExpire)
 }
