@@ -1,6 +1,7 @@
 package dslist
 
 import (
+	"literedis/internal/datastruct/dsziplist"
 	"time"
 )
 
@@ -10,9 +11,9 @@ const (
 
 // ListNode represents a node in the quicklist
 type ListNode struct {
-	values [][]byte
-	prev   *ListNode
-	next   *ListNode
+	ziplist *dsziplist.ZipList
+	prev    *ListNode
+	next    *ListNode
 }
 
 // QuickList is our main list structure
@@ -25,7 +26,10 @@ type QuickList struct {
 
 // New creates a new QuickList
 func New() *QuickList {
-	return &QuickList{}
+	return &QuickList{
+		head: &ListNode{ziplist: dsziplist.NewZipList()},
+		tail: &ListNode{ziplist: dsziplist.NewZipList()},
+	}
 }
 
 // Len returns the number of elements in the list
@@ -51,8 +55,8 @@ func (ql *QuickList) Expire() time.Time {
 // LPush inserts all the specified values at the head of the list
 func (ql *QuickList) LPush(values ...[]byte) int64 {
 	for _, value := range values {
-		if ql.head == nil || len(ql.head.values) >= defaultListNodeSize {
-			newNode := &ListNode{values: make([][]byte, 0, defaultListNodeSize)}
+		if ql.head == nil || ql.head.ziplist.Len() >= defaultListNodeSize {
+			newNode := &ListNode{ziplist: dsziplist.NewZipList()}
 			newNode.next = ql.head
 			if ql.head != nil {
 				ql.head.prev = newNode
@@ -62,7 +66,11 @@ func (ql *QuickList) LPush(values ...[]byte) int64 {
 				ql.tail = newNode
 			}
 		}
-		ql.head.values = append([][]byte{value}, ql.head.values...)
+		err := ql.head.ziplist.Insert(value)
+		if err != nil {
+			// 处理错误,可能需要创建新的节点
+			continue
+		}
 		ql.len++
 	}
 	return int64(ql.len)
@@ -71,8 +79,8 @@ func (ql *QuickList) LPush(values ...[]byte) int64 {
 // RPush inserts all the specified values at the tail of the list
 func (ql *QuickList) RPush(values ...[]byte) int64 {
 	for _, value := range values {
-		if ql.tail == nil || len(ql.tail.values) >= defaultListNodeSize {
-			newNode := &ListNode{values: make([][]byte, 0, defaultListNodeSize)}
+		if ql.tail == nil || ql.tail.ziplist.Len() >= defaultListNodeSize {
+			newNode := &ListNode{ziplist: dsziplist.NewZipList()}
 			newNode.prev = ql.tail
 			if ql.tail != nil {
 				ql.tail.next = newNode
@@ -82,7 +90,11 @@ func (ql *QuickList) RPush(values ...[]byte) int64 {
 				ql.head = newNode
 			}
 		}
-		ql.tail.values = append(ql.tail.values, value)
+		err := ql.tail.ziplist.Insert(value)
+		if err != nil {
+			// 处理错误,可能需要创建新的节点
+			continue
+		}
 		ql.len++
 	}
 	return int64(ql.len)
@@ -93,18 +105,23 @@ func (ql *QuickList) LPop() ([]byte, bool) {
 	if ql.len == 0 {
 		return nil, false
 	}
-	value := ql.head.values[0]
-	ql.head.values = ql.head.values[1:]
-	ql.len--
-	if len(ql.head.values) == 0 {
-		ql.head = ql.head.next
-		if ql.head == nil {
-			ql.tail = nil
-		} else {
-			ql.head.prev = nil
-		}
+	value, ok := ql.head.ziplist.Get(0)
+	if !ok {
+		return nil, false
 	}
-	return value, true
+	if ql.head.ziplist.Delete(0) {
+		ql.len--
+		if ql.head.ziplist.Len() == 0 {
+			ql.head = ql.head.next
+			if ql.head == nil {
+				ql.tail = nil
+			} else {
+				ql.head.prev = nil
+			}
+		}
+		return value, true
+	}
+	return nil, false
 }
 
 // RPop removes and returns the last element of the list
@@ -112,18 +129,24 @@ func (ql *QuickList) RPop() ([]byte, bool) {
 	if ql.len == 0 {
 		return nil, false
 	}
-	value := ql.tail.values[len(ql.tail.values)-1]
-	ql.tail.values = ql.tail.values[:len(ql.tail.values)-1]
-	ql.len--
-	if len(ql.tail.values) == 0 {
-		ql.tail = ql.tail.prev
-		if ql.tail == nil {
-			ql.head = nil
-		} else {
-			ql.tail.next = nil
-		}
+	lastIndex := int(ql.tail.ziplist.Len() - 1)
+	value, ok := ql.tail.ziplist.Get(lastIndex)
+	if !ok {
+		return nil, false
 	}
-	return value, true
+	if ql.tail.ziplist.Delete(lastIndex) {
+		ql.len--
+		if ql.tail.ziplist.Len() == 0 {
+			ql.tail = ql.tail.prev
+			if ql.tail == nil {
+				ql.head = nil
+			} else {
+				ql.tail.next = nil
+			}
+		}
+		return value, true
+	}
+	return nil, false
 }
 
 // LRange returns the specified elements of the list
@@ -148,18 +171,22 @@ func (ql *QuickList) LRange(start, stop int64) [][]byte {
 	node := ql.head
 	var index int64 = 0
 	for node != nil && index <= stop {
-		if index+int64(len(node.values)) > start {
+		nodeLen := node.ziplist.Len()
+		if index+nodeLen > start {
 			startIndex := 0
 			if index < start {
 				startIndex = int(start - index)
 			}
-			endIndex := len(node.values)
-			if index+int64(len(node.values)) > stop+1 {
+			endIndex := int(nodeLen)
+			if index+nodeLen > stop+1 {
 				endIndex = int(stop - index + 1)
 			}
-			result = append(result, node.values[startIndex:endIndex]...)
+			for i := startIndex; i < endIndex; i++ {
+				value, _ := node.ziplist.Get(i)
+				result = append(result, value)
+			}
 		}
-		index += int64(len(node.values))
+		index += nodeLen
 		node = node.next
 	}
 	return result
@@ -177,10 +204,11 @@ func (ql *QuickList) LIndex(index int64) ([]byte, bool) {
 	node := ql.head
 	var currentIndex int64 = 0
 	for node != nil {
-		if currentIndex+int64(len(node.values)) > index {
-			return node.values[index-currentIndex], true
+		nodeLen := node.ziplist.Len()
+		if currentIndex+nodeLen > index {
+			return node.ziplist.Get(int(index - currentIndex))
 		}
-		currentIndex += int64(len(node.values))
+		currentIndex += nodeLen
 		node = node.next
 	}
 	return nil, false
@@ -198,11 +226,11 @@ func (ql *QuickList) LSet(index int64, value []byte) bool {
 	node := ql.head
 	var currentIndex int64 = 0
 	for node != nil {
-		if currentIndex+int64(len(node.values)) > index {
-			node.values[index-currentIndex] = value
-			return true
+		nodeLen := node.ziplist.Len()
+		if currentIndex+nodeLen > index {
+			return node.ziplist.Set(int(index-currentIndex), value)
 		}
-		currentIndex += int64(len(node.values))
+		currentIndex += nodeLen
 		node = node.next
 	}
 	return false
