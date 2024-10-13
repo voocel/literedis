@@ -24,12 +24,13 @@ const (
 
 // ZipList represents a compact list structure
 type ZipList struct {
-	bytes      []byte
-	length     uint16
-	tailOffset uint32
-	expireAt   time.Time
+	bytes      []byte    // Raw byte data of the ziplist
+	length     uint16    // Number of entries in the ziplist
+	tailOffset uint32    // Offset to the last entry in the ziplist
+	expireAt   time.Time // Expiration time of the ziplist
 }
 
+// NewZipList creates and initializes a new ZipList
 func NewZipList() *ZipList {
 	zl := &ZipList{
 		bytes:      make([]byte, 10),
@@ -43,18 +44,22 @@ func NewZipList() *ZipList {
 	return zl
 }
 
+// Len returns the number of entries in the ziplist
 func (zl *ZipList) Len() int64 {
 	return int64(zl.length)
 }
 
+// Bytes returns the raw byte data of the ziplist
 func (zl *ZipList) Bytes() []byte {
 	return zl.bytes
 }
 
+// SetExpire sets the expiration time for the ziplist
 func (zl *ZipList) SetExpire(t time.Time) {
 	zl.expireAt = t
 }
 
+// IsExpired checks if the ziplist has expired
 func (zl *ZipList) IsExpired() bool {
 	return !zl.expireAt.IsZero() && time.Now().After(zl.expireAt)
 }
@@ -71,12 +76,23 @@ func (zl *ZipList) Insert(value []byte) error {
 		return errors.New("ziplist too large")
 	}
 
-	zl.bytes = append(zl.bytes, make([]byte, requiredSpace)...)
+	newSize := len(zl.bytes) + int(requiredSpace)
+	if cap(zl.bytes) < newSize {
+		// Allocate new memory with extra capacity
+		newBytes := make([]byte, newSize, newSize*2)
+		copy(newBytes, zl.bytes)
+		zl.bytes = newBytes
+	} else {
+		// Extend the existing slice
+		zl.bytes = zl.bytes[:newSize]
+	}
+
 	copy(zl.bytes[zl.tailOffset:], encodedValue)
 
 	zl.length++
 	zl.tailOffset += requiredSpace
 
+	// Update the ziplist header
 	binary.LittleEndian.PutUint32(zl.bytes[0:4], uint32(len(zl.bytes)))
 	binary.LittleEndian.PutUint16(zl.bytes[4:6], zl.length)
 	binary.LittleEndian.PutUint32(zl.bytes[6:10], zl.tailOffset)
@@ -189,6 +205,7 @@ func encodeInteger(value int64) []byte {
 	}
 }
 
+// decodeInteger decodes an integer value from a byte slice
 func decodeInteger(data []byte) (int64, int) {
 	encoding := data[0]
 	switch {
