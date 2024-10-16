@@ -235,3 +235,25 @@ func (ql *QuickList) LSet(index int64, value []byte) bool {
 	}
 	return false
 }
+
+// LGet returns the element at index in the list
+func (ql *QuickList) LGet(index int64) ([]byte, bool) {
+	if index < 0 {
+		index = int64(ql.len) + index
+	}
+	if index < 0 || index >= int64(ql.len) {
+		return nil, false
+	}
+
+	node := ql.head
+	var currentIndex int64 = 0
+	for node != nil {
+		nodeLen := node.ziplist.Len()
+		if currentIndex+nodeLen > index {
+			return node.ziplist.Get(int(index - currentIndex))
+		}
+		currentIndex += nodeLen
+		node = node.next
+	}
+	return nil, false
+}
