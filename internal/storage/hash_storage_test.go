@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -91,4 +92,26 @@ func TestMemoryHashStorage_HLen(t *testing.T) {
 	if length != 0 {
 		t.Errorf("Expected length 0 for non-existent hash, got %d", length)
 	}
+}
+
+func TestName(t *testing.T) {
+	var s = []int{0}
+	add1(s)
+	fmt.Println(s)
+	add2(&s)
+	fmt.Println(s)
+	add3(s)
+	fmt.Println(s)
+}
+
+func add1(s []int) {
+	s = append(s, 3)
+}
+
+func add2(s *[]int) {
+	*s = append(*s, 3)
+}
+
+func add3(s []int) {
+	s[0] = 1
 }
