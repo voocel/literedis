@@ -19,6 +19,26 @@ func main() {
 		fmt.Println(err)
 		os.Exit(1)
 	}
+
+	// 添加一些测试数据
+	client, err := pool.Get()
+	if err != nil {
+		fmt.Printf("Failed to get client: %v\n", err)
+		return
+	}
+	defer pool.Put(client)
+
+	client.Do("SET", "test1", "value1")
+	client.Do("SET", "test2", "value2")
+	client.Do("SET", "other", "value3")
+
+	// 测试 KEYS 命令
+	keys, err := client.Do("KEYS", "test*")
+	if err != nil {
+		fmt.Printf("Error executing KEYS command: %v\n", err)
+	} else {
+		fmt.Printf("Keys matching 'test*': %v\n", keys)
+	}
 }
 
 func newRootCommand() *cobra.Command {
